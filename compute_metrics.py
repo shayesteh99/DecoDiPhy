@@ -26,15 +26,10 @@ def __label_tree__(tree_obj):
 		labels.add(node.label)
 	return is_labeled
 
-def place_queries(tree_obj, original_tree, qinfo, prefix):
-	k = int(qinfo["k"])
-	anchors = qinfo["anchors"]
-	x = qinfo["x"]
-	p = qinfo["p"]
-
+def place_queries(tree_obj, original_tree, anchors, p, x, prefix):
 	query_labels = {}
 
-	for i in range(k):
+	for i in range(len(anchors)):
 		anchor = tree_obj.label_to_node(selection='all')[str(anchors[i])]
 		origianl_anchor = original_tree.label_to_node(selection='all')[str(anchors[i])]
 		l = origianl_anchor.edge_length
@@ -116,6 +111,7 @@ def compute_weighted_unifrac(tree_obj, true_labels, final_labels):
 				final_abunds[n.label] += final_abunds[c.label]
 		u += n.edge_length * np.fabs(true_abunds[n.label] - final_abunds[n.label])
 		D += n.edge_length * (true_abunds[n.label] + final_abunds[n.label])
+		# D += n.edge_length
 	# print(u)
 	return u/D
 
@@ -157,61 +153,96 @@ def jacard(a, b):
 
 def main():
 	parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-	parser.add_argument('-i', '--input', required=True, help="Input dir")
+	parser.add_argument('-t', '--tree', required=True, help="Input tree")
+	parser.add_argument('-q', '--queries', required=True, help="True queries")
+	parser.add_argument('-e', '--est_queries', required=True, help="Estimated queries")
+	# parser.add_argument('-f', '--format', required=False, choices=['json', 'jplace', 'txt'], default='json', help="Estimated queries format")
 
 	args = parser.parse_args()
 
-	with open(os.path.join(args.input, "pruned_tree.trees"),'r') as f:
+	with open(args.tree,'r') as f:
 		inputTree = f.read().strip().split("\n")[0]
 
 	tree_obj = read_tree_newick(inputTree)
 
 	root_edges = []
 	if len(tree_obj.root.child_nodes()) == 2:
-		root_edges = [int(c.label) for c in tree_obj.root.child_nodes()]
+		root_edges = [c.label for c in tree_obj.root.child_nodes()]
 
-	with open(os.path.join(args.input, "all_rounds.json"), "r") as f:
-		all_rounds = json.load(f)
+	true_x = None
+	true_anchors, true_p = [], []
+	with open(args.queries, 'r') as f:
+		lines = f.readlines()
+		lines = [l.split() for l in lines]
+		if len(lines[0]) > 2:
+			true_x = []
+		for l in lines:
+			true_anchors.append(l[0])
+			true_p.append(float(l[1]))
+			if len(l) > 2:
+				true_x.append(float(l[2]))
+		if not true_x:
+			true_x = [0.5 for _ in range(len(true_anchors))]
 
-	
-	true_round = all_rounds[0]
-	final_round = all_rounds[-1]
+	true_labels = place_queries(tree_obj, read_tree_newick(inputTree), true_anchors, true_p, true_x, prefix = "T")
 
-	true_anchors = np.array(true_round["anchors"])
-	final_anchors = np.array(final_round["anchors"])
-	estimated_k = len(final_anchors)
+	est_format = args.est_queries.split(".")[-1]
+
+	if est_format == "json":
+		with open(args.est_queries, "r") as f:
+			all_rounds = json.load(f)
+			final_round = all_rounds[-1]
+			est_anchors = final_round["anchors"]
+			est_p = final_round["p"]
+			est_x = final_round["x"]
+
+	elif est_format == "txt":
+		est_x = None
+		est_anchors, est_p = [], []
+		with open(args.est_queries, "r") as f:
+			lines = f.readlines()
+			lines = [l.split() for l in lines]
+			if len(lines[0]) > 2:
+				est_x = []
+			for l in lines:
+				est_anchors.append(l[0])
+				est_p.append(float(l[1]))
+				if len(l) > 2:
+					est_x.append(float(l[2]))
+		if not est_x:
+			est_x = [0.5 for _ in range(len(est_anchors))]
+
+	final_labels = place_queries(tree_obj, read_tree_newick(inputTree), est_anchors, est_p, est_x, prefix = "F")
+
+	weighted_unifrac = compute_weighted_unifrac(tree_obj, true_labels, final_labels)
+	unifrac = compute_unifrac(tree_obj, true_labels, final_labels)
+
+	estimated_k = len(est_anchors)
 
 	if len(root_edges) > 0:
 		for i in range(len(true_anchors)):
 			if true_anchors[i] == root_edges[1]:
 				true_anchors[i] = root_edges[0]
-		for i in range(len(final_anchors)):
-			if final_anchors[i] == root_edges[1]:
-				final_anchors[i] = root_edges[0]
+		for i in range(len(est_anchors)):
+			if est_anchors[i] == root_edges[1]:
+				est_anchors[i] = root_edges[0]
+
+	true_anchors = np.array(true_anchors)
+	final_anchors = np.array(est_anchors)
 
 	jaccard = jacard(set(true_anchors), set(final_anchors))
-
-	true_labels = place_queries(tree_obj, read_tree_newick(inputTree), true_round, prefix = "T")
-	final_labels = place_queries(tree_obj, read_tree_newick(inputTree), final_round, prefix = "F")
-
-
-	weighted_unifrac = compute_weighted_unifrac(tree_obj, true_labels, final_labels)
-	unifrac = compute_unifrac(tree_obj, true_labels, final_labels)
 
 	true_abunds = {n.label:0 for n in read_tree_newick(inputTree).traverse_preorder()}
 	final_abunds = {n.label:0 for n in read_tree_newick(inputTree).traverse_preorder()}
 
 	for i in range(len(true_anchors)):
-		true_abunds[str(true_anchors[i])] = true_round["p"][i]
+		true_abunds[true_anchors[i]] = true_p[i]
 	true_abunds = [true_abunds[i] for i in true_abunds]
 
 	for i in range(len(final_anchors)):
-		final_abunds[str(final_anchors[i])] = final_round["p"][i]
+		final_abunds[str(final_anchors[i])] = est_p[i]
 	final_abunds = [final_abunds[i] for i in final_abunds]
 
-
-	# true_abunds = sorted(true_round["p"])
-	# final_abunds = sorted(final_round["p"])
 
 	wasser_dist = wasserstein_distance(true_abunds, final_abunds)
 
