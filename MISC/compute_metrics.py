@@ -31,11 +31,19 @@ def place_queries(tree_obj, original_tree, anchors, p, x, prefix):
 
 	for i in range(len(anchors)):
 		anchor = tree_obj.label_to_node(selection='all')[str(anchors[i])]
-		origianl_anchor = original_tree.label_to_node(selection='all')[str(anchors[i])]
-		l = origianl_anchor.edge_length
 
 		leaf = Node(label = prefix + str(i), edge_length = 0)
 		query_labels[prefix + str(i)] = p[i]
+
+		if anchor.is_root():
+			# new_root = Node()
+			# new_root.add_child(anchor)
+			# anchor.edge_length = 0
+			# new_root.add_child(leaf)
+			# tree_obj.root = new_root
+			continue
+		origianl_anchor = original_tree.label_to_node(selection='all')[str(anchors[i])]
+		l = origianl_anchor.edge_length
 
 		if anchor.parent.label == origianl_anchor.parent.label:
 			parent = anchor.parent
@@ -71,6 +79,7 @@ def place_queries(tree_obj, original_tree, anchors, p, x, prefix):
 			new_anchor.edge_length = x[i] * l - anchor.edge_length
 			new_parent.edge_length = length - new_anchor.edge_length
 
+
 	return query_labels
 
 def prune_non_query_leaves(tree_obj, true_labels, final_labels):
@@ -86,6 +95,49 @@ def prune_non_query_leaves(tree_obj, true_labels, final_labels):
 				parent.remove_child(l)
 				parent.contract()
 	print(tree_obj.newick())
+
+def prune_labels(tree_newick, labels):
+	anchors = {}
+	tree_obj = read_tree_newick(tree_newick)
+	for l in tree_obj.traverse_leaves():
+		if l.label in labels:
+			add = True
+			parent = l.parent
+			if parent.is_root():
+				parent.remove_child(l)
+				sibling = parent.child_nodes()[0]
+				if parent.label in anchors:
+					labels[l.label] += anchors[parent.label]
+					del anchors[parent.label]
+					add = False
+				parent.remove_child(sibling)
+				tree_obj.root = sibling
+			elif len(parent.child_nodes()) > 2:
+				parent.remove_child(l)
+				sibling = parent.child_nodes()[0]
+			else:
+				parent.remove_child(l)
+				sibling = parent.child_nodes()[0]
+				# print(parent.label)
+				if parent.label in anchors:
+					labels[l.label] += anchors[parent.label]
+					del anchors[parent.label]
+					add = False
+				parent.contract()
+
+			if sibling.label in labels:
+				labels[sibling.label] += labels[l.label]
+				continue
+			for c in sibling.child_nodes():
+				if c.label in labels:
+					labels[c.label] += labels[l.label]
+					add = False
+					break
+			if add:
+				anchors[sibling.label] = labels[l.label]
+			# print(anchors)
+
+	return tree_obj.newick(), anchors
 
 def compute_weighted_unifrac(tree_obj, true_labels, final_labels):
 	true_abunds = {}
@@ -115,7 +167,7 @@ def compute_weighted_unifrac(tree_obj, true_labels, final_labels):
 	# print(u)
 	return u/D
 
-def compute_unifrac(tree_obj, true_labels, final_labels):
+def compute_unifrac(tree_obj, true_labels, final_labels, min_p = 1e-4):
 	true_abunds = {}
 	final_abunds = {}
 
@@ -129,7 +181,7 @@ def compute_unifrac(tree_obj, true_labels, final_labels):
 			final_abunds[n.label] = False
 			if n.label in true_labels:
 				true_abunds[n.label] = True
-			if n.label in final_labels:
+			if n.label in final_labels and final_labels[n.label] > min_p:
 				final_abunds[n.label] = True
 				
 		else:
@@ -145,6 +197,8 @@ def compute_unifrac(tree_obj, true_labels, final_labels):
 			u += n.edge_length
 		if not true_abunds[n.label] and final_abunds[n.label]:
 			u += n.edge_length
+		if n.label in final_labels and final_labels[n.label] < min_p:
+			continue
 		D += n.edge_length
 	return u/D
 
@@ -154,11 +208,15 @@ def jacard(a, b):
 def main():
 	parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 	parser.add_argument('-t', '--tree', required=True, help="Input tree")
+	parser.add_argument('-p', '--pruned_tree', required=False, help="Pruned tree")
 	parser.add_argument('-q', '--queries', required=True, help="True queries")
 	parser.add_argument('-e', '--est_queries', required=True, help="Estimated queries")
+	parser.add_argument('--pruned', required=False, default="1", help="Estimated queries")
+
 	# parser.add_argument('-f', '--format', required=False, choices=['json', 'jplace', 'txt'], default='json', help="Estimated queries format")
 
 	args = parser.parse_args()
+	min_p = 1e-4
 
 	with open(args.tree,'r') as f:
 		inputTree = f.read().strip().split("\n")[0]
@@ -169,22 +227,43 @@ def main():
 	if len(tree_obj.root.child_nodes()) == 2:
 		root_edges = [c.label for c in tree_obj.root.child_nodes()]
 
-	true_x = None
-	true_anchors, true_p = [], []
-	with open(args.queries, 'r') as f:
-		lines = f.readlines()
-		lines = [l.split() for l in lines]
-		if len(lines[0]) > 2:
-			true_x = []
-		for l in lines:
-			true_anchors.append(l[0])
-			true_p.append(float(l[1]))
-			if len(l) > 2:
-				true_x.append(float(l[2]))
-		if not true_x:
-			true_x = [0.5 for _ in range(len(true_anchors))]
+	if args.pruned == '1':
+		true_x = None
+		true_anchors, true_p = [], []
+		with open(args.queries, 'r') as f:
+			lines = f.readlines()
+			lines = [l.split() for l in lines]
+			if len(lines[0]) > 2:
+				true_x = []
+			for l in lines:
+				true_anchors.append(l[0])
+				true_p.append(float(l[1]))
+				if len(l) > 2:
+					true_x.append(float(l[2]))
+			if not true_x:
+				true_x = [0.5 for _ in range(len(true_anchors))]
 
-	true_labels = place_queries(tree_obj, read_tree_newick(inputTree), true_anchors, true_p, true_x, prefix = "T")
+		true_labels = place_queries(tree_obj, read_tree_newick(inputTree), true_anchors, true_p, true_x, prefix = "T")
+	else:
+		with open(args.queries, 'r') as f:
+			lines = f.readlines()
+			lines = [l.split() for l in lines]
+			true_labels = {l[0]:float(l[1]) for l in lines}
+
+			inputTree, anchors = prune_labels(tree_obj.newick(), true_labels.copy())
+			true_anchors = [k for k in anchors]
+			true_p = [anchors[k] for k in anchors]
+
+			if args.pruned_tree:
+				with open(args.pruned_tree,'r') as f:
+					inputTree = f.read().strip().split("\n")[0]
+
+			for l in tree_obj.traverse_leaves():
+				if l.label in true_labels:
+					l.edge_length = 0
+
+			# print(anchors)
+		# print(true_anchors, true_p, true_labels)
 
 	est_format = args.est_queries.split(".")[-1]
 
@@ -212,12 +291,17 @@ def main():
 		if not est_x:
 			est_x = [0.5 for _ in range(len(est_anchors))]
 
+	total_p = sum(est_p)
+	if total_p != 1:
+		est_p = [p/total_p for p in est_p]
+
 	final_labels = place_queries(tree_obj, read_tree_newick(inputTree), est_anchors, est_p, est_x, prefix = "F")
+	# print(final_labels)
 
 	weighted_unifrac = compute_weighted_unifrac(tree_obj, true_labels, final_labels)
-	unifrac = compute_unifrac(tree_obj, true_labels, final_labels)
+	unifrac = compute_unifrac(tree_obj, true_labels, final_labels, min_p)
 
-	estimated_k = len(est_anchors)
+	estimated_k = len([p for p in est_p if p > min_p])
 
 	if len(root_edges) > 0:
 		for i in range(len(true_anchors)):
@@ -227,25 +311,33 @@ def main():
 			if est_anchors[i] == root_edges[1]:
 				est_anchors[i] = root_edges[0]
 
-	true_anchors = np.array(true_anchors)
-	final_anchors = np.array(est_anchors)
+	true_anchors_filtered = set(np.array(true_anchors))
 
-	jaccard = jacard(set(true_anchors), set(final_anchors))
+	final_anchors_filtered = set(np.array(est_anchors))
+	for i in range(len(est_anchors)):
+		if est_p[i] < min_p:
+			final_anchors_filtered.remove(est_anchors[i])
+
+	jaccard = jacard(true_anchors_filtered, final_anchors_filtered)
 
 	true_abunds = {n.label:0 for n in read_tree_newick(inputTree).traverse_preorder()}
 	final_abunds = {n.label:0 for n in read_tree_newick(inputTree).traverse_preorder()}
 
+	# print(*[l for l in true_abunds], sep = "\n")
+
+
 	for i in range(len(true_anchors)):
+		# if true_anchors[i] not in true_abunds:
+		# 	print(true_anchors[i])
 		true_abunds[true_anchors[i]] = true_p[i]
 	true_abunds = [true_abunds[i] for i in true_abunds]
 
-	for i in range(len(final_anchors)):
-		final_abunds[str(final_anchors[i])] = est_p[i]
+	for i in range(len(est_anchors)):
+		final_abunds[str(est_anchors[i])] = est_p[i]
 	final_abunds = [final_abunds[i] for i in final_abunds]
 
 
 	wasser_dist = wasserstein_distance(true_abunds, final_abunds)
-
 
 	bc_dist = braycurtis(true_abunds, final_abunds)
 	print(jaccard, "\t", unifrac, "\t", weighted_unifrac, "\t", estimated_k, "\t", wasser_dist, "\t",  bc_dist)
