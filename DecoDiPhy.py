@@ -1,11 +1,11 @@
 import sys
 import os
 
-os.environ["OMP_NUM_THREADS"] = "8"
-os.environ["OPENBLAS_NUM_THREADS"] = "8"
-os.environ["MKL_NUM_THREADS"] = "8"
-os.environ["VECLIB_MAXIMUM_THREADS"] = "8"
-os.environ["NUMEXPR_NUM_THREADS"] = "8"
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
 import argparse
 import time
@@ -18,6 +18,7 @@ import json
 from itertools import combinations
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
+from jutil import extended_newick
 
 
 def __label_tree__(tree_obj):
@@ -467,14 +468,14 @@ def reverse_hill_climbing(d, l, C, D, index_to_node):
 
 	return anchors, obj, p, x, y
 
-def reverse_hill_climbing_fixed_k(d, l, C, D, index_to_node, k):
+def reverse_hill_climbing_fixed_k(d, l, C, D, index_to_node, k, min_p=0.01):
 	n = len(index_to_node)
 	anchors = np.array([i for i in range(n)])
 	obj, p, x, y, _ = get_optimal_obj(d, l, C, D, anchors, index_to_node, len(anchors))
-	while np.min(p) < 1/n:
-		if len(anchors[p >= 1/n]) < k:
+	while np.min(p) < min_p:
+		if len(anchors[p >= min_p]) < k:
 			break
-		anchors = anchors[p >= 1/n]
+		anchors = anchors[p >= min_p]
 		obj, p, x, y, _ = get_optimal_obj(d, l, C, D, anchors, index_to_node, len(anchors))
 
 	while len(anchors) > k:
@@ -738,6 +739,33 @@ def perm_test(dist_matrix, k, rest_anchors, original_stat, num = 1000):
 	all_prob = np.array(all_prob)
 	return len(all_prob[all_prob < original_stat]) / num
 
+def save_jplace(all_rounds, tree_obj, file):
+	result = {}
+	tree_str, label_dict = extended_newick(tree_obj)
+	result["metadata"] = {"invocation": " ".join(sys.argv),
+						"software": "DecoDiPhy",
+						"repository" : "https://github.com/shayesteh99/DecoDiPhy"}
+
+	result["fields"] = ["edge_num", "abundance", "x", "y"]
+
+	f = all_rounds[-1]
+	placements = []
+	for i in range(f['k']):
+		p = {}
+		p['n'] = "q"+str(i+1)
+		index = label_dict[f['anchors'][i]]
+		
+		p['p'] = [[index, f['p'][i], f['x'][i], f['y']]]
+		placements.append(p)
+
+	result['placements'] = placements
+	result["tree"] = tree_str
+
+	with open(file, 'w') as f:
+		f.write(json.dumps(result, sort_keys=True, indent=4))
+		f.write("\n")
+		f.close()
+	# print(result)
 
 
 def main():
@@ -746,12 +774,13 @@ def main():
 	parser.add_argument('-d', '--distances', required=True, help="Distance file")
 	parser.add_argument('-s', '--seed', required=False, default=1142, help="Random Seed")
 	parser.add_argument('-f', '--fix_k', required=False, default='0', help="Fix k")
-	parser.add_argument('-k', '--k', required=False, help="Number of query taxa if fix_k == 1")
-	parser.add_argument('-q', '--quick', required=False, default='0', help="Quick?")
-	parser.add_argument('-r', '--radius', required=False, default=1, help="Radius")
+	parser.add_argument('-k', '--k', required=False, help="Number of query taxa if fix_k==1 or Number of max queries if fix_k==0")
+	parser.add_argument('-q', '--quick', required=False, default='1', help="Quick?")
+	parser.add_argument('-r', '--radius', required=False, default=2, help="Radius")
 	parser.add_argument('-p', '--pval', required=False, default=0.1, help="P-value threshold")
 	parser.add_argument('-m', '--method', required=False, choices=['hill', 'exhaustive', 'closest', 'closest_iterative', 'reverse_hill'], default='hill', help="Search method")
 	parser.add_argument('-o', '--outdir', required=False, default='', help="Output dir")
+	parser.add_argument('--min_p', required=False, default=1e-2, help="Minimum abundance")
 	parser.add_argument('--warm_start', required=False, help="Path to the input file")
 
 	args = parser.parse_args()
@@ -771,6 +800,7 @@ def main():
 		with open(os.path.join(args.outdir, "labelled_tree.trees"), 'w') as f:
 			f.write(tree_obj.newick())
 
+
 	with open(args.distances, 'r') as f:
 		lines = f.readlines()
 		lines = [l.split() for l in lines]
@@ -779,11 +809,13 @@ def main():
 	pruned = preprocess_input(tree_obj, distances)
 	d, l, C, D, index_to_node, node_to_index, index_to_leaf = get_input_matrices(tree_obj, distances)
 
-	dist_matrix = get_dist_matrix_new(tree_obj, node_to_index)
+	#only for p_value
+	# dist_matrix = get_dist_matrix_new(tree_obj, node_to_index)
 
 	all_rounds = []
 	# _, goal_obj, _, _, _ = reverse_hill_climbing(d, l, C, D, index_to_node)
-	# print("Goal Obj: ", goal_obj, np.log10(goal_obj))
+	# print(goal_obj)
+	# return
 
 	print("created matrices")
 
@@ -801,7 +833,7 @@ def main():
 		elif args.method == "closest_iterative":
 			opt_anchors, opt_obj, opt_p, opt_x, opt_y = k_closest_leaves_iterative(d, l, C, D, index_to_node, node_to_index, index_to_leaf, k)
 		elif args.method == "reverse_hill":
-			opt_anchors, opt_obj, opt_p, opt_x, opt_y = reverse_hill_climbing_fixed_k(d, l, C, D, index_to_node, k)
+			opt_anchors, opt_obj, opt_p, opt_x, opt_y = reverse_hill_climbing_fixed_k(d, l, C, D, index_to_node, k, min_p = float(args.min_p))
 		# elif args.method == "hill":
 		# 	if args.quick == '1':
 		# 		node_neighbors = get_neighbors(tree_obj, node_to_index, int(args.radius))
@@ -833,6 +865,8 @@ def main():
 		all_y = []
 		all_anchors = []
 
+		p_thresh = float(args.min_p)
+
 		node_neighbors = None
 		if args.quick == '1':
 			node_neighbors = get_neighbors(tree_obj, node_to_index, int(args.radius))
@@ -845,8 +879,16 @@ def main():
 			start_k = len(opt_anchors) + 1
 
 		end_k = len(index_to_node)
-		if args.fix_k == '1':
+		if args.k:
+			k = int(args.k)
 			end_k = k+1
+
+		if start_k >= end_k:
+			if args.warm_start:
+				with open(os.path.join(args.outdir, "all_rounds.json"), 'w') as f:
+					json.dump(all_rounds, f)
+
+			raise ValueError("k too small!")
  
 		for i in range(start_k, end_k):
 			print("+" * 200)
@@ -863,46 +905,48 @@ def main():
 			# p_thresh = -np.log(1-0.25) / (i**2)
 			# if i <= 2:
 			# 	p_thresh = 1e-3 
-			# if min(opt_p) < p_thresh:
-			# 	print("stopped by p0")
-			# 	break
+			if min(opt_p) < p_thresh and args.fix_k == '0':
+				print("stopped by p0")
+				break
 
-			p_val = 1
-			if i >= 2:
-				min_prob = 1
-				print([index_to_node[a] for a in opt_anchors], opt_p)
-				for j in range(len(opt_anchors)):
-					last_anchor = opt_anchors[j]
-					min_p = j
 
-					rest_anchors = [a for a in opt_anchors if a != last_anchor]
 
-					min_dist = min([dist_matrix[last_anchor][a] for a in rest_anchors])
+			# p_val = 1
+			# if i >= 2:
+			# 	min_prob = 1
+			# 	print([index_to_node[a] for a in opt_anchors], opt_p)
+			# 	for j in range(len(opt_anchors)):
+			# 		last_anchor = opt_anchors[j]
+			# 		min_p = j
 
-					choices = set()
-					for a in rest_anchors:
-						choices.update([j for j in dist_matrix[a] if dist_matrix[a][j] <= min_dist])
+			# 		rest_anchors = [a for a in opt_anchors if a != last_anchor]
 
-					prob = len([c for c in choices if c not in rest_anchors]) / (len(dist_matrix) - i + 1)
-					# prob2 = 1 - np.exp(-(i**2) * opt_p[min_p])
-					prob2 = 1 - (1 - opt_p[min_p])**(i-1)
-					min_prob = min(min_prob, prob*prob2)
+			# 		min_dist = min([dist_matrix[last_anchor][a] for a in rest_anchors])
 
-				p_val = perm_test(dist_matrix, i, rest_anchors, min_prob)
-				print("p val: ", p_val)
+			# 		choices = set()
+			# 		for a in rest_anchors:
+			# 			choices.update([j for j in dist_matrix[a] if dist_matrix[a][j] <= min_dist])
 
-				if p_val < pval_thresh and args.fix_k == '0':
-					print("stopped by p_val")
-					round_info = all_rounds[-1]
-					round_info['p_value'] = p_val
-					break
+			# 		prob = len([c for c in choices if c not in rest_anchors]) / (len(dist_matrix) - i + 1)
+			# 		# prob2 = 1 - np.exp(-(i**2) * opt_p[min_p])
+			# 		prob2 = 1 - (1 - opt_p[min_p])**(i-1)
+			# 		min_prob = min(min_prob, prob*prob2)
 
-			round_info = all_rounds[-1]
-			round_info['p_value'] = p_val
+			# 	p_val = perm_test(dist_matrix, i, rest_anchors, min_prob)
+			# 	print("p val: ", p_val)
+
+			# 	if p_val < pval_thresh and args.fix_k == '0':
+			# 		print("stopped by p_val")
+			# 		round_info = all_rounds[-1]
+			# 		round_info['p_value'] = p_val
+			# 		break
+
+			# round_info = all_rounds[-1]
+			# round_info['p_value'] = p_val
 
 			with open(os.path.join(args.outdir, "all_rounds_" + str(i) + ".json"), 'w') as f:
 				json.dump(all_rounds, f)
-			if i > 1:
+			if os.path.exists(os.path.join(args.outdir, "all_rounds_" + str(i-1) + ".json")):
 				os.remove(os.path.join(args.outdir, "all_rounds_" + str(i-1) + ".json"))
 
 			all_obj.append(opt_obj)
@@ -910,42 +954,38 @@ def main():
 			all_p.append(opt_p)
 			all_y.append(opt_y)
 			all_anchors.append(opt_anchors)
-			if opt_obj < 1e-10:
+			if opt_obj < 1e-10 and args.fix_k == '0':
 				print("stopped by obj0")
 				break
-			# if prev_obj and (prev_obj - opt_obj)/prev_obj < 0.1:
+			# if prev_obj and (prev_obj - opt_obj)/prev_obj < 0.05:
 			# 	print("stopped by obj_imp")
 			# 	break
 
 			prev_obj = opt_obj
 
+		if len(all_anchors) == 0:
+			end = time.time()
+
+			round_info = {}
+			round_info["k"] = 0
+			round_info["rounds"] = "final"
+			round_info["loss"] = "NA"
+			round_info["anchors"] = []
+			round_info["p"] = []
+			round_info["x"] = []
+			round_info["y"] = 0
+			round_info["runtime"] = end - start
+			all_rounds.append(round_info)
+
+			with open(os.path.join(args.outdir, "all_rounds.json"), 'w') as f:
+				json.dump(all_rounds, f)
+
+			return
+
 		opt_anchors = all_anchors[-1]
 		opt_x = all_x[-1]
 		opt_y = all_y[-1]
 		opt_p = all_p[-1]
-
-		# for i in range(len(all_obj)-1):
-		# 	if all_obj[i] / all_obj[-1] < 2:
-		# 		opt_anchors = all_anchors[i]
-		# 		opt_x = all_x[i]
-		# 		opt_y = all_y[i]
-		# 		opt_p = all_p[i]
-		# 		print("stopped by obj1/2")
-		# 		break
-
-		# elif args.method == 'reverse_hill':
-		# 	opt_anchors, opt_obj, opt_p, opt_x, opt_y = reverse_hill_climbing(d, l, C, D, index_to_node)
-		# 	print(opt_obj)
-
-		# 	sorted_indices = np.argsort(opt_anchors)
-		# 	opt_anchors = opt_anchors[sorted_indices]
-		# 	opt_p = opt_p[sorted_indices]
-		# 	opt_x = opt_x[sorted_indices]
-
-		# 	print("optimal anchors: ", opt_anchors)
-		# 	print("optimal p: ", opt_p)
-		# 	print("optimal x: ", opt_x)
-		# 	print("optimal y: ", opt_y)
 
 	if max(opt_x) > 1 - 1e-3:
 		indices = np.where(opt_x > 1 - 1e-3)[0]
@@ -1032,6 +1072,8 @@ def main():
 		json.dump(all_rounds, f)
 	if os.path.exists(os.path.join(args.outdir, "all_rounds_" + str(len(opt_anchors)) + ".json")):
 		os.remove(os.path.join(args.outdir, "all_rounds_" + str(len(opt_anchors)) + ".json"))
+
+	save_jplace(all_rounds, tree_obj, os.path.join(args.outdir, "output.jplace"))
 
 
 if __name__ == "__main__":
