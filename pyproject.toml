@@ -1,0 +1,31 @@
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["decodiphy*"]
+exclude = ["MISC*", "Rplots*", "Example*"]
+
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "decodiphy"
+version = "1.2.3"
+description = "DecoDiPhy is multi-placement tool designed to consolidate millions of noisy reads into few accurate phylogenetic placements."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+  {name = "Shayesteh Arasti", email = "sarasti@ucsd.edu"}
+]
+
+# List your dependencies here:
+dependencies = [
+  "numpy",
+  "treeswift",
+  "cvxpy",
+]
+
+# If your package installs a CLI command like `decodiphy`
+[project.scripts]
+decodiphy = "decodiphy.__main__:main"
+

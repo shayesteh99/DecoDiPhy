@@ -18,7 +18,7 @@ import json
 from itertools import combinations
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
-from jutil import extended_newick
+from .jutil import extended_newick
 
 
 def __label_tree__(tree_obj):
