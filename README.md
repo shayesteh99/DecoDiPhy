@@ -1,22 +1,26 @@
 # DecoDiPhy
 
 ## Installation 
-You can clone DecoDiPhy from github:
+This software will soon be available to install via `pip`. Alternatively, you can clone DecoDiPhy from github, and follow the steps below to create a local version:
 
 ```
 git clone https://github.com/shayesteh99/DecoDiPhy.git
 cd DecoDiPhy
+pip install .
 ```
+
+If the build is successful, running `decodiphy --help` will show you all the parameters and their use for decodiphy.
+
 
 ## Exucation
 To use DecoDiPhy, you can simply run:
 ```
-python DecoDiPhy.py -d [INPUT DISTANCE FILE] -t [REFERENCE TREE] -o [OUTPUT DIR] > [LOG FILE]
+decodiphy -d [INPUT DISTANCE FILE] -t [REFERENCE TREE] -o [OUTPUT DIR] > [LOG FILE]
 ```
 
 Example:
 ```
-python DecoDiPhy.py -t Example/pruned_tree.trees -d Example/true_distances.txt -o ./Example
+decodiphy -t Example/pruned_tree.trees -d Example/true_distances.txt -o ./Example
 ```
 
 Below is the description of all parameters of DecoDiPhy:
@@ -35,5 +39,5 @@ python compute_distances.py -i Example/krepp_multiplacements.jplace -t Example/p
 
 And now you can run DecoDiPhy on top of krepp distances:
 ```
-python DecoDiPhy.py -t Example/pruned_tree.trees -d Example/krepp_distances.txt -o ./Example
+decodiphy -t Example/pruned_tree.trees -d Example/krepp_distances.txt -o ./Example
 ```
