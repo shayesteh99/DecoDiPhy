@@ -12,8 +12,7 @@ name = "decodiphy"
 version = "1.2.3"
 description = "DecoDiPhy is multi-placement tool designed to consolidate millions of noisy reads into few accurate phylogenetic placements."
 readme = "README.md"
-license = "MIT"
-license-files = ["LICENSE"]
+license = {file="LICENSE"}
 authors = [
   {name = "Shayesteh Arasti", email = "sarasti@ucsd.edu"}
 ]
