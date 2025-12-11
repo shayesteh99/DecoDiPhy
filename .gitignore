@@ -1,5 +1,54 @@
+# Byte-compiled / optimized / DLL files
 __pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+build/
+dist/
 *.egg-info/
 *.egg
 *.whl
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints
+
+# VSCode / IDE files
+.vscode/
+.idea/
+
+# System files
 .DS_Store
+Thumbs.db
+
+# Bioconda / conda build temporary files
+conda-bld/
+*.tar.bz2
+
+# Optional: ignore local config files
+.env
+
