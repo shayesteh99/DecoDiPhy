@@ -34,7 +34,7 @@ Below is the description of all parameters of DecoDiPhy:
 krepp is a recent tool developed by Ali Osman Berk Şapci and Siavash Mirarab (See [preprint](https://www.biorxiv.org/content/10.1101/2025.01.20.633730v1)). You can visit [here](https://github.com/bo1929/krepp/tree/master) to check it out and learn how to use it. krepp will output distances to each reference taxa and placements of individual reads on the backbone tree, and tha't why it pairs very well with DecoDiPhy. In our experience, individual krepp plcacements result in more accurate consolidation with DecoDiPhy. If you have the krepp output in jplace format like `Example/krepp_multiplacements.jplace`, you can simply run:
 
 ```
-python compute_distances.py -i Example/krepp_multiplacements.jplace -t Example/pruned_tree.trees -o Example/krepp_distances.txt
+python decodiphy/compute_distances.py -i Example/krepp_multiplacements.jplace -t Example/pruned_tree.trees -o Example/krepp_distances.txt
 ```
 
 And now you can run DecoDiPhy on top of krepp distances:
