@@ -1,7 +1,7 @@
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["decodiphy*"]
-exclude = ["MISC*", "Rplots*", "Example*"]
+exclude = ["MISC*", "Example*"]
 
 [build-system]
 requires = ["setuptools", "wheel"]
