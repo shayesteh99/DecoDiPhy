@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "decodiphy"
-version = "1.2.3"
+version = "1.3.3"
 description = "DecoDiPhy is multi-placement tool designed to consolidate millions of noisy reads into few accurate phylogenetic placements."
 readme = "README.md"
 license = {file="LICENSE"}
@@ -19,11 +19,12 @@ authors = [
 
 # List your dependencies here:
 dependencies = [
-  "numpy>=2.0",
-  "treeswift",
-  "cvxpy",
+  "numpy>=2.0,<3",
+  "scipy>=1.10",
+  "cvxpy>=1.8",
+  "treeswift>=1.1.0",
+  "osqp>=1.1.0",
 ]
-
 # If your package installs a CLI command like `decodiphy`
 [project.scripts]
 decodiphy = "decodiphy.__main__:main"
