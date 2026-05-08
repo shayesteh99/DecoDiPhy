@@ -14,11 +14,18 @@ from treeswift import *
 import treeswift
 import random
 import cvxpy as cp
+import osqp
+import scipy.sparse as sp
 import json
 from itertools import combinations
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 from .jutil import extended_newick
+from .__init__ import __version__
+from .optimize import AnchorOSQP
+import tracemalloc
+
+print("DecoDiPhy", __version__)
 
 
 def __label_tree__(tree_obj):
@@ -143,6 +150,28 @@ def get_neighbors(tree, node_to_index, radius = 2):
 		node_neighbors[node_to_index[n.label]] = [node_to_index[v] for v in visited]
 	return node_neighbors
 
+def get_immediate_neighbors(tree, node_to_index):
+	node_neighbors = {}
+
+	for n in tree.traverse_preorder():
+		if n.is_root():
+			continue
+		node_neighbors[node_to_index[n.label]] = []
+		for c in n.child_nodes():
+			node_neighbors[node_to_index[n.label]].append(node_to_index[c.label])
+		parent = n.parent
+		if not parent.is_root():
+			node_neighbors[node_to_index[n.label]].append(node_to_index[parent.label])
+			for c in parent.child_nodes():
+				if c != n:
+					node_neighbors[node_to_index[n.label]].append(node_to_index[c.label])
+		else:
+			for c in parent.child_nodes():
+				if c != n:
+					for gc in c.child_nodes():
+						node_neighbors[node_to_index[n.label]].append(node_to_index[gc.label])
+	return node_neighbors
+
 def get_neighbors_for_node(tree,  node, radius):
 	node_neighbors = {}
 
@@ -248,152 +277,188 @@ def get_input_matrices(tree_obj, distances):
 
 	return d, l, C, D, index_to_node, node_to_index, index_to_leaf
 
+def build_cvxpy_problem(L, k):
+    p = cp.Variable(k)
+    x = cp.Variable(k)
+    y = cp.Variable()
 
-def get_optimal_obj(d, l, C, D, anchors, index_to_node, k):
+    DA_param = cp.Parameter((L, k))
+    CAl_param = cp.Parameter((L, k))
+    d_param = cp.Parameter(L)
+
+    residuals = d_param - (DA_param @ p + CAl_param @ x + y)
+
+    objective = cp.Minimize(cp.sum_squares(residuals))
+
+    constraints = [
+        p >= 0,
+        x >= 0,
+        x <= p,
+        y >= 0,
+        cp.sum(p) == 1,
+    ]
+
+    problem = cp.Problem(objective, constraints)
+
+    res= {}
+    res['problem'] = problem
+    res['p'] = p
+    res['x'] = x
+    res['y'] = y
+    res['DA'] = DA_param
+    res['CAl'] = CAl_param
+    res['d'] = d_param
+
+    return res
+
+
+def get_optimal_obj(problem, d, l_T, C_T, D_T, anchors, index_to_node, k):
 	t = time.time()
-	DA = D[:, anchors]
-	CAl = C[:, anchors] * l[anchors].T
+	# DA = D[:, anchors]
+	DA = D_T[anchors].T
+	# CAl = C[:, anchors] * l[anchors].T
+	CAl = C_T[anchors].T * l_T[anchors]
 
 	n = len(index_to_node)
 	L = len(d)
 
-	p = cp.Variable(k)   
-	x = cp.Variable(k)   
-	y = cp.Variable()
+	# p = cp.Variable(k)   
+	# x = cp.Variable(k)   
+	# y = cp.Variable()
 
-	term1 = DA @ p   
-	term2 = CAl @ x
-	term3 = np.ones(L) * y
+	problem['DA'].value = DA
+	problem['CAl'].value = CAl
+	problem['d'].value = d
 
-	residuals = d - (term1 + term2 + term3)
-	objective = cp.Minimize(cp.sum_squares(residuals))
+	# term1 = DA @ p
+	# term2 = CAl @ x
+	# term3 = np.ones(L) * y
 
-	constraints = [
-    p >= 0,
-    x >= 0,
-    x <= p,
-    y >= 0,
-  	cp.sum(p) == 1,
-	]
+	# residuals = d - (term1 + term2 + term3)
+	# objective = cp.Minimize(cp.sum_squares(residuals))
 
-	problem = cp.Problem(objective, constraints)
+	# constraints = [
+    # p >= 0,
+    # x >= 0,
+    # x <= p,
+    # y >= 0,
+  	# cp.sum(p) == 1,
+	# ]
+
+	# problem = cp.Problem(objective, constraints)
 	# print(problem.size_metrics)
 	# print(problem.size_metrics.__dict__)
 	try:
-		problem.solve(verbose=False)
+		problem['problem'].solve(verbose=False)
 	except cp.error.SolverError:
 		print("Solver reached max iterations. Using the last available solution.")
 		e = time.time()
 		return float('Inf'), None, None, None, e-t
 
 	e = time.time()
-	return objective.value, p.value, np.array([min(i, 1) for i in np.fabs(x.value/p.value)]), y.value, e-t
+	return problem['problem'].value, problem['p'].value, np.array([min(i, 1) for i in np.fabs(problem['x'].value/problem['p'].value)]), problem['y'].value, e-t
 
 
-def hill_climbing_concurrent(d, l, C, D, index_to_node, k, all_rounds, initial_anchors = None, quick='0', neighbors = None):
-	opt_times = []
+def get_optimal_obj_osqp(d, l_T, C_T, D_T, anchors, index_to_node, k):
+	t = time.time()
+	# DA = D[:, anchors]
+	DA = D_T[anchors].T
+	# CAl = C[:, anchors] * l[anchors].T
+	CAl = C_T[anchors].T * l_T[anchors]
+
 	n = len(index_to_node)
 	L = len(d)
-	if initial_anchors is None:
-		anchors = np.random.choice([i for i in range(n)], k, replace = False)
-	else:
-		new = np.random.choice([i for i in range(n) if i not in initial_anchors], k-len(initial_anchors), replace = False)
-		anchors = np.array(list(initial_anchors) + list(new))
 
-	print(anchors)
+	M = np.hstack([DA, CAl, np.ones((L,1))])
+	P = 2.0 * (M.T @ M)
+	# P = P + 1e-9 * np.eye(P.shape[0])
+	q = -2.0 * (M.T @ d) 
 
-	original, p, x, y, t = get_optimal_obj(d, l, C, D, anchors, index_to_node, k)
-	opt_times.append(t)
-	min_p, min_x, min_y = p, x, y
-	min_obj = original
-	# last_anchor = anchors[-1]
-	rounds = 0
-	while True:
-		init = time.time()
-		rounds += 1
-		print("=" * 200)
-		print(rounds)
-		min_obj = original
-		# min_anchors = np.array(anchors)
-		og_anchors = np.array(anchors)
+	n_vars = 2*k + 1
+	row_data = []
+	col_data = []
+	val_data = []
+	l_list = []
+	u_list = []
+	r = 0
 
-		for ind in range(k):
-			i = k-ind-1
-			# new_anchors = np.array(anchors)
-			min_val = 0
-			max_val = n-1
-			min_anchor = anchors[i]
+    # --- p >= 0 ---
+	for i in range(k):
+		row_data.append(r); col_data.append(i); val_data.append(1.0)
+		l_list.append(0.0); u_list.append(np.inf)
+		r += 1
 
-			##possible anchor choices
-			choices = range(min_val, max_val + 1)
-			if ind > 0 and k > 2 and quick == '1':
-				choices = neighbors[anchors[i]]
+	# --- x >= 0 ---
+	for i in range(k):
+		row_data.append(r); col_data.append(k + i); val_data.append(1.0)
+		l_list.append(0.0); u_list.append(np.inf)
+		r += 1
 
-			with ProcessPoolExecutor() as executor:
-				futures = {}
-				for v in choices:
-					if v in anchors:
-						continue
-					new_anchors = anchors.copy()
-					new_anchors[i] = v
-					future = executor.submit(get_optimal_obj, d, l, C, D, new_anchors, index_to_node, k)
-					futures[future] = v
+	# --- x <= p  -> x - p <= 0 ---
+	for i in range(k):
+		# -p + x <= 0  (i.e., lower=-inf, upper=0)
+		row_data.append(r); col_data.append(i); val_data.append(-1.0)
+		row_data.append(r); col_data.append(k + i); val_data.append(1.0)
+		l_list.append(-np.inf); u_list.append(0.0)
+		r += 1
 
-				for future in as_completed(futures):
-					v = futures[future]
-					try:
-						new_obj, new_p, new_x, new_y, t = future.result()
-						opt_times.append(t)
-						if min_obj > new_obj:
-							min_obj = new_obj
-							min_anchor = v
-							# min_anchors[i] = v
-							min_p = new_p
-							min_x = new_x
-							min_y = new_y
-							# last_anchor = v
-					except Exception as e:
-						print(f"Error with v={v}: {e}")
-			anchors[i] = min_anchor
+	# --- y >= 0 ---
+	row_data.append(r); col_data.append(2*k); val_data.append(1.0)
+	l_list.append(0.0); u_list.append(np.inf)
+	r += 1
 
+	# --- sum(p) = 1 ---
+	for i in range(k):
+		row_data.append(r); col_data.append(i); val_data.append(1.0)
+	l_list.append(1.0); u_list.append(1.0)
+	r += 1
 
-		print(min_obj, np.log10(min_obj))
-		end_round = time.time()
-		round_info = {}
-		round_info["k"] = k
-		round_info["rounds"] = rounds
-		round_info["loss"] = min_obj
-		round_info["anchors"] = [index_to_node[i] for i in anchors]
-		round_info["p"] = list(min_p)
-		round_info["x"] = list(min_x)
-		round_info["y"] = float(min_y)
-		round_info["runtime"] = end_round - init
-		round_info["opttime"] = np.mean(opt_times)
-		all_rounds.append(round_info)
+	A = sp.csc_matrix((val_data, (row_data, col_data)), shape=(r, n_vars))
+	l_vec = np.array(l_list, dtype=float)
+	u_vec = np.array(u_list, dtype=float)
 
-		if set(og_anchors) == set(anchors):
-			return anchors, min_obj, min_p, min_x, min_y, round_info
-		original = min_obj
-		og_anchors = anchors
+	P_csc = sp.csc_matrix(P)
 
-	return anchors, min_obj, min_p, min_x, min_y, round_info
+	prob = osqp.OSQP()
+	prob.setup(P=P_csc, q=q, A=A, l=l_vec, u=u_vec, eps_abs=1e-6, eps_rel=1e-6, polish=True, verbose=False)
+	res = prob.solve()
+    
+	if res.info.status_val not in [1, 2]:
+		print("OSQP did not converge")
+		return float('inf'), None, None, None, time.time()-t
+
+	z_opt = res.x
+	p_opt = z_opt[:k]
+	x_opt = z_opt[k:2*k]
+	y_opt = z_opt[-1]
+
+	e = time.time()
+
+	obj_val = np.sum((d - (DA @ p_opt + CAl @ x_opt + y_opt))**2)
+
+	return obj_val, p_opt, np.array([min(i, 1) for i in np.fabs(x_opt/p_opt)]), y_opt, e - t
 
 
 
-def hill_climbing(d, l, C, D, index_to_node, k, all_rounds, initial_anchors = None, quick='0', neighbors = None):
+def hill_climbing(d, l_T, C_T, D_T, index_to_node, k, all_rounds, solver, anchors = None, quick='0', neighbors = None, p_thresh = 0.01):
+
+	def build_DA_CAl(anchors):
+		DA = D_T[anchors].T
+		CAl = C_T[anchors].T * l_T[anchors]
+		return DA, CAl
+
+
 	opt_times = []
+	opt_memos = []
 	n = len(index_to_node)
 	L = len(d)
-	if initial_anchors is None:
-		anchors = np.random.choice([i for i in range(n)], k, replace = False)
-	else:
-		new = np.random.choice([i for i in range(n) if i not in initial_anchors], k-len(initial_anchors), replace = False)
-		anchors = np.array(list(initial_anchors) + list(new))
 
 	print(anchors)
+	original, p, x, y, t, m = solver.solve(anchors)
+	DA, CAl = build_DA_CAl(anchors)
 
-	original, p, x, y, t = get_optimal_obj(d, l, C, D, anchors, index_to_node, k)
 	opt_times.append(t)
+	opt_memos.append(m)
 	min_p, min_x, min_y = p, x, y
 	min_obj = original
 	last_anchor = anchors[-1]
@@ -404,12 +469,11 @@ def hill_climbing(d, l, C, D, index_to_node, k, all_rounds, initial_anchors = No
 		print("=" * 200)
 		print(rounds)
 		min_obj = original
-		# min_anchors = np.array(anchors)
+
 		og_anchors = np.array(anchors)
 
 		for ind in range(k):
 			i = k-ind-1
-			# new_anchors = np.array(anchors)
 			min_val = 0
 			max_val = n-1
 			min_anchor = anchors[i]
@@ -418,23 +482,30 @@ def hill_climbing(d, l, C, D, index_to_node, k, all_rounds, initial_anchors = No
 			choices = range(min_val, max_val + 1)
 			if ind > 0 and k > 2 and quick == '1':
 				choices = neighbors[anchors[i]]
+			count = 0
 			for v in choices:
 				if v in anchors:
 					continue
-				# new_anchors[i] = v
+
 				anchors[i] = v
-				new_obj, new_p, new_x, new_y, t = get_optimal_obj(d, l, C, D, anchors, index_to_node, k)
+
+
+				new_obj, new_p, new_x, new_y, t, _ = solver.solve(anchors)
+				count += 1
+
 				opt_times.append(t)
 				if min_obj > new_obj:
 					min_obj = new_obj
 					min_anchor = v
-					# min_anchors[i] = v
 					min_p = new_p
 					min_x = new_x
 					min_y = new_y
 					last_anchor = v
+
+
 			anchors[i] = min_anchor
-			# print(anchors)
+			new_obj, new_p, new_x, new_y, t, _ = solver.solve(anchors)
+
 		print(min_obj, np.log10(min_obj))
 		end_round = time.time()
 		round_info = {}
@@ -447,6 +518,7 @@ def hill_climbing(d, l, C, D, index_to_node, k, all_rounds, initial_anchors = No
 		round_info["y"] = float(min_y)
 		round_info["runtime"] = end_round - init
 		round_info["opttime"] = np.mean(opt_times)
+		round_info["memory"] = np.mean(opt_memos)
 		all_rounds.append(round_info)
 		if set(og_anchors) == set(anchors):
 			return anchors, min_obj, min_p, min_x, min_y, round_info
@@ -706,21 +778,6 @@ def perm_test(dist_matrix, k, rest_anchors, original_stat, num = 1000):
 		p = np.random.rand(k)
 		p /= np.sum(p)
 
-		# min_dist = float("Inf")
-		# for a1 in range(len(anchors)):
-		# 	for a2 in range(a1+1, len(anchors)):
-		# 		if dist_matrix[anchors[a1]][anchors[a2]] < min_dist:
-		# 			min_dist = dist_matrix[anchors[a1]][anchors[a2]]
-		# 			last_anchor = anchors[a1]
-		# 			min_p = a1
-		# 			if p[a2] < p[a1]:
-		# 				last_anchor = anchors[a2]
-		# 				min_p = a2
-		# min_prob = 1
-		# for i in range(k):
-		# min_p = i
-		# last_anchor = anchors[i]
-
 		min_p = k-1
 		# last_anchor = anchors[-1]
 
@@ -739,11 +796,35 @@ def perm_test(dist_matrix, k, rest_anchors, original_stat, num = 1000):
 	all_prob = np.array(all_prob)
 	return len(all_prob[all_prob < original_stat]) / num
 
+def get_terminal_branch_lengths(tree_obj):
+	sum_lengths = {}
+	leaf_counts = {}
+	for n in tree_obj.traverse_postorder():
+		if n.is_leaf():
+			sum_lengths[n.label] = 0
+			leaf_counts[n.label] = 1
+		else:
+			sum_lengths[n.label] = 0
+			leaf_counts[n.label] = 0
+			for c in n.child_nodes():
+				sum_lengths[n.label] += sum_lengths[c.label] + leaf_counts[c.label] * c.edge_length
+				leaf_counts[n.label] += leaf_counts[c.label]
+
+	terminal_lengths = {}
+	for n in tree_obj.traverse_postorder():
+		terminal_lengths[n.label] = sum_lengths[n.label] / leaf_counts[n.label] + n.edge_length / 2
+
+	return terminal_lengths
+
+def find_individual_y(p, x, ymean, anchors, tree_obj):
+	pass
+
+
 def save_jplace(all_rounds, tree_obj, file):
 	result = {}
 	tree_str, label_dict = extended_newick(tree_obj)
 	result["metadata"] = {"invocation": " ".join(sys.argv),
-						"software": "DecoDiPhy",
+						"software": f"DecoDiPhy {__version__}",
 						"repository" : "https://github.com/shayesteh99/DecoDiPhy"}
 
 	result["fields"] = ["edge_num", "abundance", "x", "y"]
@@ -777,7 +858,7 @@ def main():
 	parser.add_argument('-k', '--k', required=False, help="Number of query taxa if fix_k==1 or Number of max queries if fix_k==0")
 	parser.add_argument('-q', '--quick', required=False, default='1', help="Quick?")
 	parser.add_argument('-r', '--radius', required=False, default=2, help="Radius")
-	parser.add_argument('-p', '--pval', required=False, default=0.1, help="P-value threshold")
+	# parser.add_argument('-p', '--pval', required=False, default=0.1, help="P-value threshold")
 	parser.add_argument('-m', '--method', required=False, choices=['hill', 'exhaustive', 'closest', 'closest_iterative', 'reverse_hill'], default='hill', help="Search method")
 	parser.add_argument('-o', '--outdir', required=False, default='', help="Output dir")
 	parser.add_argument('--min_p', required=False, default=1e-2, help="Minimum abundance")
@@ -788,16 +869,17 @@ def main():
 	random.seed(a=int(args.seed))
 	np.random.seed(int(args.seed))
 
+	# tracemalloc.start()
 	start = time.time()
 
-	pval_thresh = float(args.pval)
+	# pval_thresh = float(args.pval)
 
 	with open(args.tree,'r') as f:
 		tree = f.read().strip().split("\n")[0]
 	tree_obj = read_tree_newick(tree)
 	if not __label_tree__(tree_obj):
 		print("Input tree was not labeled!")
-		with open(os.path.join(args.outdir, "labelled_tree.trees"), 'w') as f:
+		with open(os.path.join(args.outdir, "labeled_tree.trees"), 'w') as f:
 			f.write(tree_obj.newick())
 
 
@@ -808,6 +890,9 @@ def main():
 
 	pruned = preprocess_input(tree_obj, distances)
 	d, l, C, D, index_to_node, node_to_index, index_to_leaf = get_input_matrices(tree_obj, distances)
+	D_T = D.T
+	C_T = C.T
+	l_T = l.reshape(-1)
 
 	#only for p_value
 	# dist_matrix = get_dist_matrix_new(tree_obj, node_to_index)
@@ -870,6 +955,8 @@ def main():
 		node_neighbors = None
 		if args.quick == '1':
 			node_neighbors = get_neighbors(tree_obj, node_to_index, int(args.radius))
+		elif args.quick == '2':
+			node_neighbors = get_immediate_neighbors(tree_obj, node_to_index)
 
 		start_k = 1
 		if args.warm_start:
@@ -889,14 +976,29 @@ def main():
 					json.dump(all_rounds, f)
 
 			raise ValueError("k too small!")
- 
+			
+
 		for i in range(start_k, end_k):
 			print("+" * 200)
 			print(i)
+
+			#build cvxpy problem
+			# problem = build_cvxpy_problem(D.shape[0], i)
+			if opt_anchors is None:
+				opt_anchors = np.random.choice([i for i in range(len(index_to_node))], i, replace = False)
+			else:
+				new = np.random.choice([i for i in range(len(index_to_node)) if i not in opt_anchors], i-len(opt_anchors), replace = False)
+				opt_anchors = np.array(list(opt_anchors) + list(new))
+
+			solver = AnchorOSQP(d, l_T, C_T, D_T, opt_anchors)
+
 			# if args.parallel == '1':
 			# 	opt_anchors, opt_obj, opt_p, opt_x, opt_y, round_info = hill_climbing_concurrent(d, l, C, D, index_to_node, i, all_rounds, initial_anchors = opt_anchors, quick = args.quick, neighbors = node_neighbors)
 			# else:
-			opt_anchors, opt_obj, opt_p, opt_x, opt_y, round_info = hill_climbing(d, l, C, D, index_to_node, i, all_rounds, initial_anchors = opt_anchors, quick = args.quick, neighbors = node_neighbors)
+			# if args.quick == '2':
+			# 	opt_anchors, opt_obj, opt_p, opt_x, opt_y, round_info = hill_climbing_even_faster(d, l, C, D, index_to_node, i, all_rounds, initial_anchors = opt_anchors, neighbors = node_neighbors, max_radius = int(args.radius))
+			# else: 
+			opt_anchors, opt_obj, opt_p, opt_x, opt_y, round_info = hill_climbing(d, l_T, C_T, D_T, index_to_node, i, all_rounds, solver, anchors = opt_anchors, quick = args.quick, neighbors = node_neighbors)
 			print("opt_x: ", opt_x)
 			print("opt_p: ", opt_p)
 			print("opt_y: ", opt_y)
@@ -1004,7 +1106,9 @@ def main():
 						continue
 					new_anchors = np.array(opt_anchors)
 					new_anchors[i] = s
-					new_obj, new_p, new_x, new_y, _ = get_optimal_obj(d, l, C, D, new_anchors, index_to_node, len(new_anchors))
+					new_obj, new_p, new_x, new_y, _ = get_optimal_obj_osqp(d, l_T, C_T, D_T, new_anchors, index_to_node, len(new_anchors))
+					# new_obj, new_p, new_x, new_y, _ = get_optimal_obj(d, l, C, D, new_anchors, index_to_node, len(new_anchors))
+
 					if new_x[i] < 1 - 1e-3:
 						opt_anchors = new_anchors
 						opt_x = new_x
@@ -1023,7 +1127,8 @@ def main():
 					continue
 				new_anchors = np.array(opt_anchors)
 				new_anchors[i] = s
-				new_obj, new_p, new_x, new_y, _ = get_optimal_obj(d, l, C, D, new_anchors, index_to_node, len(new_anchors))
+				# new_obj, new_p, new_x, new_y, _ = get_optimal_obj(d, l, C, D, new_anchors, index_to_node, len(new_anchors))
+				new_obj, new_p, new_x, new_y, _ = get_optimal_obj_osqp(d, l_T, C_T, D_T, new_anchors, index_to_node, len(new_anchors))
 				if new_x[i] > 1e-4 and np.fabs(new_x[i] - 1) > 1e-3:
 					opt_anchors = new_anchors
 					opt_x = new_x
@@ -1036,7 +1141,8 @@ def main():
 		if args.fix_k == '0':
 			list(opt_anchors).remove(root_edges[1])
 			opt_anchors = np.array(opt_anchors)
-			opt_obj, opt_p, opt_x, opt_y, _ = get_optimal_obj(d, l, C, D, opt_anchors, index_to_node, len(opt_anchors))
+			# opt_obj, opt_p, opt_x, opt_y, _ = get_optimal_obj(d, l, C, D, opt_anchors, index_to_node, len(opt_anchors))
+			opt_obj, opt_p, opt_x, opt_y, _ = get_optimal_obj_osqp(d, l_T, C_T, D_T, opt_anchors, index_to_node, len(new_anchors))
 
 	end = time.time()
 
@@ -1048,6 +1154,7 @@ def main():
 
 	if pruned:
 		opt_anchors, opt_x = post_process_output(tree_obj, read_tree_newick(tree), opt_anchors, opt_x)
+
 
 	round_info = {}
 	round_info["k"] = len(opt_anchors)
@@ -1067,6 +1174,12 @@ def main():
 	print("optimal y: ", opt_y)
 
 	print("Optimization Runtime: ", end - start) 
+
+	# current, peak = tracemalloc.get_traced_memory()
+	# print(f"Current memory: {current / 1e6:.2f} MB")
+	# print(f"Peak memory: {peak / 1e6:.2f} MB")
+
+	# tracemalloc.stop()
 
 	with open(os.path.join(args.outdir, "all_rounds.json"), 'w') as f:
 		json.dump(all_rounds, f)
