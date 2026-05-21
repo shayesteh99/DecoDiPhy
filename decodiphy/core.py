@@ -23,27 +23,33 @@ from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_compl
 from .jutil import extended_newick
 from .__init__ import __version__
 from .optimize import AnchorOSQP
+from .read_jplace import jplace_to_distance
 import tracemalloc
+import warnings
+warnings.filterwarnings("ignore", category=RuntimeWarning)
 
 print("DecoDiPhy", __version__)
 
 
-def __label_tree__(tree_obj):
+def is_number(x):
+    try:
+        float(x)
+        return True
+    except (ValueError, TypeError):
+        return False
+
+def __label_tree__(tree_obj, index = 0):
 	is_labeled = True
-	i = 0
 	labels = set()
 	for node in tree_obj.traverse_preorder():
-		# if not node.is_root():
-		# 	if node.edge_length < 0:
-		# 		node.edge_length = 0
 		if node.is_leaf():
 			continue
-		if not node.label or node.label in labels or isinstance(node.label, float): 
+		if not node.label or node.label in labels or is_number(node.label):
 			is_labeled = False
-			node.label = 'I' + str(i)
-			i += 1        
+			node.label = 'I' + str(index)
+			index += 1
 		labels.add(node.label)
-	return is_labeled
+	return is_labeled, index
 
 def preprocess_input(tree_obj, distances):
 	total = len([l for l in tree_obj.traverse_leaves()])
@@ -420,7 +426,17 @@ def get_optimal_obj_osqp(d, l_T, C_T, D_T, anchors, index_to_node, k):
 	P_csc = sp.csc_matrix(P)
 
 	prob = osqp.OSQP()
-	prob.setup(P=P_csc, q=q, A=A, l=l_vec, u=u_vec, eps_abs=1e-6, eps_rel=1e-6, polish=True, verbose=False)
+	prob.setup(P=P_csc, q=q, A=A, l=l_vec, u=u_vec, 
+		eps_abs=1e-8, 
+		eps_rel=1e-8, 
+		max_iter=200000, 
+		polish=True, 
+		rho=0.1, adaptive_rho=True,
+        adaptive_rho_interval=25,
+        adaptive_rho_tolerance=5.0,
+        adaptive_rho_fraction=0.4,
+        scaling=False, scaled_termination=False,
+		verbose=False)
 	res = prob.solve()
     
 	if res.info.status_val not in [1, 2]:
@@ -440,7 +456,108 @@ def get_optimal_obj_osqp(d, l_T, C_T, D_T, anchors, index_to_node, k):
 
 
 
-def hill_climbing(d, l_T, C_T, D_T, index_to_node, k, all_rounds, solver, anchors = None, quick='0', neighbors = None, p_thresh = 0.01):
+def hill_climbing_even_faster(d, l, C, D, index_to_node, k, all_rounds, initial_anchors = None, quick='0', neighbors = None, max_radius = 2):
+	opt_times = []
+	n = len(index_to_node)
+	L = len(d)
+	if initial_anchors is None:
+		anchors = np.random.choice([i for i in range(n)], k, replace = False)
+	else:
+		new = np.random.choice([i for i in range(n) if i not in initial_anchors], k-len(initial_anchors), replace = False)
+		anchors = np.array(list(initial_anchors) + list(new))
+
+	print(anchors)
+
+	original, p, x, y, t = get_optimal_obj(d, l, C, D, anchors, index_to_node, k)
+	opt_times.append(t)
+	min_p, min_x, min_y = p, x, y
+	min_obj = original
+	last_anchor = anchors[-1]
+	rounds = 0
+	while True:
+		init = time.time()
+		rounds += 1
+		print("=" * 200)
+		print(rounds)
+		min_obj = original
+		# min_anchors = np.array(anchors)
+		og_anchors = np.array(anchors)
+
+		for ind in range(k):
+			i = k-ind-1
+			# new_anchors = np.array(anchors)
+			min_val = 0
+			max_val = n-1
+			min_anchor = anchors[i]
+
+			##possible anchor choices
+			radius = n
+			if ind > 0 and k > 2:
+				radius = max_radius
+
+			visited = [0 for _ in range(min_val, max_val + 1)]
+			visited[min_anchor] = 1
+			queue = [(v,1) for v in neighbors[min_anchor]]
+			count = 0
+			while len(queue) > 0:
+				q = queue.pop(0)
+				if q[1] > radius or visited[q[0]] == 1:
+					continue
+				v = q[0]
+				visited[v] = 1
+				if v in anchors:
+					continue
+				anchors[i] = v
+				new_obj, new_p, new_x, new_y, t = get_optimal_obj(d, l, C, D, anchors, index_to_node, k)
+				count += 1
+				# if ind == 0:
+				# 	print(new_obj, index_to_node[v], new_p[i])
+				opt_times.append(t)
+				if min_obj >= new_obj:
+					min_obj = new_obj
+					min_anchor = v
+					min_p = new_p
+					min_x = new_x
+					min_y = new_y
+					for nv in neighbors[v]:
+						if visited[nv] == 0:
+							queue.append((nv, q[1]+1))
+				else:
+					diff = np.abs(np.log(new_obj - min_obj))
+					# print(new_obj, min_obj)
+					# print(diff)
+					# print(1 - (1/(1+diff)))
+					if random.random() < 1 - (1/(1+diff)):
+						# print("added")
+						for nv in neighbors[v]:
+							if visited[nv] == 0:
+								queue.append((nv, q[1]+1))
+			print(count)
+			anchors[i] = min_anchor
+			# print(anchors)
+		print(min_obj)
+		end_round = time.time()
+		round_info = {}
+		round_info["k"] = k
+		round_info["rounds"] = rounds
+		round_info["loss"] = min_obj
+		round_info["anchors"] = [index_to_node[i] for i in anchors]
+		round_info["p"] = list(min_p)
+		round_info["x"] = list(min_x)
+		round_info["y"] = float(min_y)
+		round_info["runtime"] = end_round - init
+		round_info["opttime"] = np.mean(opt_times)
+		all_rounds.append(round_info)
+		if set(og_anchors) == set(anchors):
+			return anchors, min_obj, min_p, min_x, min_y, round_info
+		original = min_obj
+		og_anchors = anchors
+
+	return anchors, min_obj, min_p, min_x, min_y, round_info
+
+
+
+def hill_climbing(d, l_T, C_T, D_T, index_to_node, k, all_rounds, solver, anchors = None, quick='0', neighbors = None):
 
 	def build_DA_CAl(anchors):
 		DA = D_T[anchors].T
@@ -452,11 +569,19 @@ def hill_climbing(d, l_T, C_T, D_T, index_to_node, k, all_rounds, solver, anchor
 	opt_memos = []
 	n = len(index_to_node)
 	L = len(d)
+	# if initial_anchors is None:
+	# 	anchors = np.random.choice([i for i in range(n)], k, replace = False)
+	# else:
+	# 	new = np.random.choice([i for i in range(n) if i not in initial_anchors], k-len(initial_anchors), replace = False)
+	# 	anchors = np.array(list(initial_anchors) + list(new))
 
 	print(anchors)
 	original, p, x, y, t, m = solver.solve(anchors)
 	DA, CAl = build_DA_CAl(anchors)
 
+	# residual = d - (DA @ p + CAl @ x + y)
+
+	# original, p, x, y, t = get_optimal_obj(problem, d, l_T, C_T, D_T, anchors, index_to_node, k)
 	opt_times.append(t)
 	opt_memos.append(m)
 	min_p, min_x, min_y = p, x, y
@@ -469,11 +594,16 @@ def hill_climbing(d, l_T, C_T, D_T, index_to_node, k, all_rounds, solver, anchor
 		print("=" * 200)
 		print(rounds)
 		min_obj = original
+		# min_DA = DA
+		# min_CAl = CAl
 
+
+		# min_anchors = np.array(anchors)
 		og_anchors = np.array(anchors)
 
 		for ind in range(k):
 			i = k-ind-1
+			# new_anchors = np.array(anchors)
 			min_val = 0
 			max_val = n-1
 			min_anchor = anchors[i]
@@ -483,30 +613,46 @@ def hill_climbing(d, l_T, C_T, D_T, index_to_node, k, all_rounds, solver, anchor
 			if ind > 0 and k > 2 and quick == '1':
 				choices = neighbors[anchors[i]]
 			count = 0
+			# anchor_set = set(anchors)
 			for v in choices:
 				if v in anchors:
 					continue
 
+				# new_anchors[i] = v
 				anchors[i] = v
 
 
+				# if check_anchor(anchors, i, min_p, residual, min_DA, min_CAl) > 1e-3:
+				# 	print(check_anchor(anchors, i, min_p, residual, min_DA, min_CAl))
+				# 	print(anchors[i], " was skipped")
+				# 	continue
+				# new_obj, new_p, new_x, new_y, t = get_optimal_obj(problem, d, l_T, C_T, D_T, anchors, index_to_node, k)
 				new_obj, new_p, new_x, new_y, t, _ = solver.solve(anchors)
 				count += 1
-
+				# if ind == 0:
+				# 	print(new_obj, index_to_node[v], new_p[i])
 				opt_times.append(t)
 				if min_obj > new_obj:
 					min_obj = new_obj
 					min_anchor = v
+					# min_anchors[i] = v
 					min_p = new_p
 					min_x = new_x
 					min_y = new_y
 					last_anchor = v
 
 
+					# min_DA = D_T[anchors].T
+					# min_CAl = C_T[anchors].T * l_T[anchors][None, :]
+					# residual = d - (min_DA @ min_p + min_CAl @ min_x + min_y)
+
+
 			anchors[i] = min_anchor
 			new_obj, new_p, new_x, new_y, t, _ = solver.solve(anchors)
-
-		print(min_obj, np.log10(min_obj))
+			# print(count)
+			# print(min_obj, np.log10(min_obj))
+			# print(anchors)
+		print(min_obj)
 		end_round = time.time()
 		round_info = {}
 		round_info["k"] = k
@@ -526,6 +672,96 @@ def hill_climbing(d, l_T, C_T, D_T, index_to_node, k, all_rounds, solver, anchor
 		og_anchors = anchors
 
 	return anchors, min_obj, min_p, min_x, min_y, round_info
+
+def final_search_round(d, l_T, C_T, D_T, index_to_node, all_rounds, solver, anchors, quick='0', neighbors = None):
+
+	def build_DA_CAl(anchors):
+		DA = D_T[anchors].T
+		CAl = C_T[anchors].T * l_T[anchors]
+		return DA, CAl
+
+	k = len(anchors)
+	opt_times = []
+	opt_memos = []
+	n = len(index_to_node)
+	L = len(d)
+
+	print("final optimization")
+	print(anchors)
+	DA, CAl = build_DA_CAl(anchors)
+
+	original, p, x, y, t, m = solver.solve(anchors)
+
+	min_p, min_x, min_y = p, x, y
+	min_obj = original
+	rounds = 0
+	while True:
+		init = time.time()
+		rounds += 1
+		print("=" * 200)
+		print(rounds)
+		min_obj = original
+		# min_DA = DA
+		# min_CAl = CAl
+
+
+		# min_anchors = np.array(anchors)
+		og_anchors = np.array(anchors)
+
+		for ind in range(k):
+			i = k-ind-1
+			# new_anchors = np.array(anchors)
+			min_val = 0
+			max_val = n-1
+			min_anchor = anchors[i]
+
+			##possible anchor choices
+			choices = range(min_val, max_val + 1)
+			if quick == '1':
+				choices = neighbors[anchors[i]]
+			count = 0
+			# anchor_set = set(anchors)
+			for v in choices:
+				if v in anchors:
+					continue
+
+				# new_anchors[i] = v
+				anchors[i] = v
+				new_obj, new_p, new_x, new_y, t, _ = solver.solve(anchors)
+				count += 1
+				opt_times.append(t)
+				if min_obj > new_obj:
+					min_obj = new_obj
+					min_anchor = v
+					min_p = new_p
+					min_x = new_x
+					min_y = new_y
+					last_anchor = v
+
+			anchors[i] = min_anchor
+			new_obj, new_p, new_x, new_y, t, _ = solver.solve(anchors)
+
+		print(min_obj)
+		end_round = time.time()
+		round_info = {}
+		round_info["k"] = k
+		round_info["rounds"] = rounds
+		round_info["loss"] = min_obj
+		round_info["anchors"] = [index_to_node[i] for i in anchors]
+		round_info["p"] = list(min_p)
+		round_info["x"] = list(min_x)
+		round_info["y"] = float(min_y)
+		round_info["runtime"] = end_round - init
+		round_info["opttime"] = np.mean(opt_times)
+		round_info["memory"] = np.mean(opt_memos)
+		all_rounds.append(round_info)
+		if set(og_anchors) == set(anchors):
+			return anchors, min_obj, min_p, min_x, min_y, round_info
+		original = min_obj
+		og_anchors = anchors
+
+	return anchors, min_obj, min_p, min_x, min_y, round_info
+
 
 def reverse_hill_climbing(d, l, C, D, index_to_node):
 	n = len(index_to_node)
@@ -778,6 +1014,21 @@ def perm_test(dist_matrix, k, rest_anchors, original_stat, num = 1000):
 		p = np.random.rand(k)
 		p /= np.sum(p)
 
+		# min_dist = float("Inf")
+		# for a1 in range(len(anchors)):
+		# 	for a2 in range(a1+1, len(anchors)):
+		# 		if dist_matrix[anchors[a1]][anchors[a2]] < min_dist:
+		# 			min_dist = dist_matrix[anchors[a1]][anchors[a2]]
+		# 			last_anchor = anchors[a1]
+		# 			min_p = a1
+		# 			if p[a2] < p[a1]:
+		# 				last_anchor = anchors[a2]
+		# 				min_p = a2
+		# min_prob = 1
+		# for i in range(k):
+		# min_p = i
+		# last_anchor = anchors[i]
+
 		min_p = k-1
 		# last_anchor = anchors[-1]
 
@@ -824,7 +1075,8 @@ def save_jplace(all_rounds, tree_obj, file):
 	result = {}
 	tree_str, label_dict = extended_newick(tree_obj)
 	result["metadata"] = {"invocation": " ".join(sys.argv),
-						"software": f"DecoDiPhy {__version__}",
+						"software": "DecoDiPhy",
+						"version": __version__,
 						"repository" : "https://github.com/shayesteh99/DecoDiPhy"}
 
 	result["fields"] = ["edge_num", "abundance", "x", "y"]
@@ -848,11 +1100,20 @@ def save_jplace(all_rounds, tree_obj, file):
 		f.close()
 	# print(result)
 
+def check_identifiability(tree, anchors):
+	label_to_node = tree.label_to_node(selection='all')
+	for a in anchors:
+		node1 = label_to_node[a]
+		if node1.parent.label in anchors or node1.parent.parent.label in anchors:
+			return True
+	return False
+
 
 def main():
 	parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-	parser.add_argument('-t', '--tree', required=True, help="Input tree")
-	parser.add_argument('-d', '--distances', required=True, help="Distance file")
+	parser.add_argument('-t', '--tree', required=False, help="Input tree")
+	parser.add_argument('-d', '--distances', required=False, help="Distance file")
+	parser.add_argument('-j', '--jplace', required=False, help="jplace file")
 	parser.add_argument('-s', '--seed', required=False, default=1142, help="Random Seed")
 	parser.add_argument('-f', '--fix_k', required=False, default='0', help="Fix k")
 	parser.add_argument('-k', '--k', required=False, help="Number of query taxa if fix_k==1 or Number of max queries if fix_k==0")
@@ -861,38 +1122,94 @@ def main():
 	# parser.add_argument('-p', '--pval', required=False, default=0.1, help="P-value threshold")
 	parser.add_argument('-m', '--method', required=False, choices=['hill', 'exhaustive', 'closest', 'closest_iterative', 'reverse_hill'], default='hill', help="Search method")
 	parser.add_argument('-o', '--outdir', required=False, default='', help="Output dir")
-	parser.add_argument('--min_p', required=False, default=1e-2, help="Minimum abundance")
+	parser.add_argument('--min_p', required=False, help="Minimum abundance.")
 	parser.add_argument('--warm_start', required=False, help="Path to the input file")
+	parser.add_argument('--score', required=False, help="Score a set of placements")
+	parser.add_argument('--optimizer', required=False, default='osqp', choices=['osqp', 'cvxpy'])
 
 	args = parser.parse_args()
 
 	random.seed(a=int(args.seed))
 	np.random.seed(int(args.seed))
 
+	if args.optimizer == "cvxpy":
+		SolverClass = AnchorCVXPY
+	elif args.optimizer == "osqp":
+		SolverClass = AnchorOSQP
+	else:
+		raise ValueError(f"Unknown optimizer: {args.optimizer}")
+
 	# tracemalloc.start()
 	start = time.time()
 
 	# pval_thresh = float(args.pval)
+	if args.min_p:
+		p_thresh = float(args.min_p)
 
-	with open(args.tree,'r') as f:
-		tree = f.read().strip().split("\n")[0]
-	tree_obj = read_tree_newick(tree)
-	if not __label_tree__(tree_obj):
+	if args.jplace:
+		tree_obj, distances, read_count = jplace_to_distance(args.jplace)
+
+		# print(*distances)
+		if not args.min_p:
+			p_thresh = 1000/read_count
+
+
+		# if not __label_tree__(tree_obj):
 		print("Input tree was not labeled!")
 		with open(os.path.join(args.outdir, "labeled_tree.trees"), 'w') as f:
 			f.write(tree_obj.newick())
 
+	else:
+		if not args.tree or not args.distances:
+			raise ValueError(f"You need either a jplace file or a tree and the average distances as input.")
 
-	with open(args.distances, 'r') as f:
-		lines = f.readlines()
-		lines = [l.split() for l in lines]
-		distances = {l[0]:float(l[1]) for l in lines}
+		with open(args.tree,'r') as f:
+			tree = f.read().strip().split("\n")[0]
+		tree_obj = read_tree_newick(tree)
+		if not __label_tree__(tree_obj):
+			print("Input tree was not labeled!")
+			with open(os.path.join(args.outdir, "labeled_tree.trees"), 'w') as f:
+				f.write(tree_obj.newick())
+
+
+		with open(args.distances, 'r') as f:
+			lines = f.readlines()
+			lines = [l.split() for l in lines]
+			distances = {l[0]:float(l[1]) for l in lines}
+
+		if not args.min_p:
+			p_thresh = 0.01
 
 	pruned = preprocess_input(tree_obj, distances)
 	d, l, C, D, index_to_node, node_to_index, index_to_leaf = get_input_matrices(tree_obj, distances)
 	D_T = D.T
 	C_T = C.T
 	l_T = l.reshape(-1)
+
+	#score an existing set of placements
+	if args.score:
+		with open(args.score, 'r') as f:
+			lines = f.readlines()
+			anchors = [l.split()[0] for l in lines]
+			is_known = check_identifiability(tree_obj, anchors)
+			print(is_known)
+			solver = AnchorCVXPY(d, l_T, C_T, D_T, [node_to_index[a] for a in anchors])
+			new_obj, new_p, new_x, new_y, _, _ = solver.solve([node_to_index[a] for a in anchors])
+			# problem = build_cvxpy_problem(D.shape[0], len(anchors))
+			# new_obj, new_p, new_x, new_y, _ = get_optimal_obj(problem, d, l_T, C_T, D_T, [node_to_index[a] for a in anchors], index_to_node, len(anchors))
+
+			for i in range(len(anchors)):
+				print(anchors[i], "\t", new_p[i], "\t", new_x[i])
+
+			print("loss: ", new_obj, is_known)
+			print("anchors: ", anchors)
+			print("optimal p: ", new_p)
+			print("optimal x: ", new_x)
+			print("optimal y: ", new_y)
+
+			end = time.time()
+			print("Optimization Runtime: ", end - start) 
+			return
 
 	#only for p_value
 	# dist_matrix = get_dist_matrix_new(tree_obj, node_to_index)
@@ -918,7 +1235,7 @@ def main():
 		elif args.method == "closest_iterative":
 			opt_anchors, opt_obj, opt_p, opt_x, opt_y = k_closest_leaves_iterative(d, l, C, D, index_to_node, node_to_index, index_to_leaf, k)
 		elif args.method == "reverse_hill":
-			opt_anchors, opt_obj, opt_p, opt_x, opt_y = reverse_hill_climbing_fixed_k(d, l, C, D, index_to_node, k, min_p = float(args.min_p))
+			opt_anchors, opt_obj, opt_p, opt_x, opt_y = reverse_hill_climbing_fixed_k(d, l, C, D, index_to_node, k, min_p = p_thresh)
 		# elif args.method == "hill":
 		# 	if args.quick == '1':
 		# 		node_neighbors = get_neighbors(tree_obj, node_to_index, int(args.radius))
@@ -950,7 +1267,7 @@ def main():
 		all_y = []
 		all_anchors = []
 
-		p_thresh = float(args.min_p)
+		# p_thresh = float(args.min_p)
 
 		node_neighbors = None
 		if args.quick == '1':
@@ -990,7 +1307,7 @@ def main():
 				new = np.random.choice([i for i in range(len(index_to_node)) if i not in opt_anchors], i-len(opt_anchors), replace = False)
 				opt_anchors = np.array(list(opt_anchors) + list(new))
 
-			solver = AnchorOSQP(d, l_T, C_T, D_T, opt_anchors)
+			solver = SolverClass(d, l_T, C_T, D_T, opt_anchors)
 
 			# if args.parallel == '1':
 			# 	opt_anchors, opt_obj, opt_p, opt_x, opt_y, round_info = hill_climbing_concurrent(d, l, C, D, index_to_node, i, all_rounds, initial_anchors = opt_anchors, quick = args.quick, neighbors = node_neighbors)
@@ -1010,41 +1327,6 @@ def main():
 			if min(opt_p) < p_thresh and args.fix_k == '0':
 				print("stopped by p0")
 				break
-
-
-
-			# p_val = 1
-			# if i >= 2:
-			# 	min_prob = 1
-			# 	print([index_to_node[a] for a in opt_anchors], opt_p)
-			# 	for j in range(len(opt_anchors)):
-			# 		last_anchor = opt_anchors[j]
-			# 		min_p = j
-
-			# 		rest_anchors = [a for a in opt_anchors if a != last_anchor]
-
-			# 		min_dist = min([dist_matrix[last_anchor][a] for a in rest_anchors])
-
-			# 		choices = set()
-			# 		for a in rest_anchors:
-			# 			choices.update([j for j in dist_matrix[a] if dist_matrix[a][j] <= min_dist])
-
-			# 		prob = len([c for c in choices if c not in rest_anchors]) / (len(dist_matrix) - i + 1)
-			# 		# prob2 = 1 - np.exp(-(i**2) * opt_p[min_p])
-			# 		prob2 = 1 - (1 - opt_p[min_p])**(i-1)
-			# 		min_prob = min(min_prob, prob*prob2)
-
-			# 	p_val = perm_test(dist_matrix, i, rest_anchors, min_prob)
-			# 	print("p val: ", p_val)
-
-			# 	if p_val < pval_thresh and args.fix_k == '0':
-			# 		print("stopped by p_val")
-			# 		round_info = all_rounds[-1]
-			# 		round_info['p_value'] = p_val
-			# 		break
-
-			# round_info = all_rounds[-1]
-			# round_info['p_value'] = p_val
 
 			with open(os.path.join(args.outdir, "all_rounds_" + str(i) + ".json"), 'w') as f:
 				json.dump(all_rounds, f)
@@ -1088,6 +1370,12 @@ def main():
 		opt_x = all_x[-1]
 		opt_y = all_y[-1]
 		opt_p = all_p[-1]
+		opt_obj = all_obj[-1]
+
+		# # if args.optimizer == "cvxpy":
+		# solver = AnchorCVXPY(d, l_T, C_T, D_T, opt_anchors)
+		# opt_anchors, opt_obj, opt_p, opt_x, opt_y, round_info = final_search_round(d, l_T, C_T, D_T, index_to_node, all_rounds, solver, opt_anchors, quick = args.quick, neighbors = node_neighbors)
+
 
 	if max(opt_x) > 1 - 1e-3:
 		indices = np.where(opt_x > 1 - 1e-3)[0]
