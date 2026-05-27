@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "decodiphy"
-version = "1.3.3"
+version = "1.4.0"
 description = "DecoDiPhy is multi-placement tool designed to consolidate millions of noisy reads into few accurate phylogenetic placements."
 readme = "README.md"
 license = "MIT"
