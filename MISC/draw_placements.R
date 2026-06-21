@@ -5,6 +5,7 @@ library(dplyr)
 library(tidyverse)
 library(treeio)
 library(viridisLite)
+library(ape)
 
 args <- commandArgs(trailingOnly = TRUE)
 
@@ -61,7 +62,7 @@ edge_df <- merge(edge_df, tree_df, by = "id")
 
 ggtree(tree_phy) %<+% edge_df +
   geom_tree(aes(color = abundance, linewidth=is.na(abundance))) +
-  scale_linewidth_manual(values = c(2, 0.5), guide="none")+
+  scale_linewidth_manual(values = c(1.5, 0.5), guide="none")+
   scale_color_gradientn(
     colours = viridis(256, option = "C"),
     trans = "log10",
