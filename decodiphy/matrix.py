@@ -1,4 +1,5 @@
 import numpy as np
+from .tree_utils import get_terminal_branch_lengths
 
 
 def get_input_matrices(tree_obj, distances):
@@ -51,9 +52,12 @@ def get_input_matrices(tree_obj, distances):
     l = np.array([label_to_node[i].edge_length for i in index_to_node])
     l = l[:, np.newaxis]
 
+    branch_lengths = {label_to_node[i].label:label_to_node[i].edge_length for i in index_to_node}
+    terminal_lengths = get_terminal_branch_lengths(tree_obj)
+
     d = np.zeros(len(index_to_leaf))
     for i in range(len(index_to_leaf)):
         leaf = index_to_leaf[i]
         d[i] = distances[leaf]
 
-    return d, l, C, D, index_to_node, node_to_index, index_to_leaf
+    return d, l, C, D, index_to_node, node_to_index, index_to_leaf, branch_lengths, terminal_lengths

@@ -88,6 +88,24 @@ def get_terminal_branch_lengths(tree_obj):
 
     terminal_lengths = {}
     for n in tree_obj.traverse_postorder():
-        terminal_lengths[n.label] = sum_lengths[n.label] / leaf_counts[n.label] + n.edge_length / 2
+        if n.is_root():
+            terminal_lengths[n.label] = sum_lengths[n.label] / leaf_counts[n.label]
+        else:
+            terminal_lengths[n.label] = sum_lengths[n.label] / leaf_counts[n.label] + n.edge_length / 2
 
     return terminal_lengths
+
+
+def compute_individual_ys(anchors, all_x, est_y, terminal_lengths, branch_lengths):
+    all_y = []
+    total_y = 0
+    for i in range(len(anchors)):
+        anchor = anchors[i]
+        total_y += terminal_lengths[anchor] + all_x[i] * branch_lengths[anchor]
+    offset = est_y/total_y
+
+    for i in range(len(anchors)):
+        anchor = anchors[i]
+        y = offset * (terminal_lengths[anchor] + all_x[i] * branch_lengths[anchor])
+        all_y.append(y)
+    return all_y

@@ -2,12 +2,12 @@ import time
 import numpy as np
 
 
-def hill_climbing(d, l_T, C_T, D_T, index_to_node, k, all_rounds, solver, anchors=None, quick='0', neighbors=None):
+def hill_climbing(d, l_T, C_T, D_T, index_to_node, k, solver, anchors=None, quick='0', neighbors=None):
     opt_times = []
     opt_memos = []
     n = len(index_to_node)
 
-    print(anchors)
+    # print(anchors)
     original, p, x, y, t, m = solver.solve(anchors)
     opt_times.append(t)
     opt_memos.append(m)
@@ -17,8 +17,8 @@ def hill_climbing(d, l_T, C_T, D_T, index_to_node, k, all_rounds, solver, anchor
     while True:
         init = time.time()
         rounds += 1
-        print("=" * 200)
-        print(rounds)
+        # print("=" * 200)
+        # print(rounds)
         min_obj = original
         og_anchors = np.array(anchors)
 
@@ -46,22 +46,22 @@ def hill_climbing(d, l_T, C_T, D_T, index_to_node, k, all_rounds, solver, anchor
             anchors[i] = min_anchor
             solver.solve(anchors)
 
-        print(min_obj)
+        # print(min_obj)
         end_round = time.time()
-        round_info = {
-            "k": k,
-            "rounds": rounds,
-            "loss": min_obj,
-            "anchors": [index_to_node[i] for i in anchors],
-            "p": list(min_p),
-            "x": list(min_x),
-            "y": float(min_y),
-            "runtime": end_round - init,
-            "opttime": np.mean(opt_times),
-            "memory": np.mean(opt_memos),
-        }
-        all_rounds.append(round_info)
         if set(og_anchors) == set(anchors):
+            round_info = {
+                "k": k,
+                "rounds": rounds,
+                "loss": min_obj,
+                "anchors": [index_to_node[i] for i in anchors],
+                "p": list(min_p),
+                "x": list(min_x),
+                "y": float(min_y),
+                "runtime": end_round - init,
+                "opttime": np.mean(opt_times),
+                "memory": np.mean(opt_memos),
+            }
+            # all_rounds.append(round_info)
             return anchors, min_obj, min_p, min_x, min_y, round_info
         original = min_obj
         og_anchors = anchors

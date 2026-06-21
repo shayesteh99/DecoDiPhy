@@ -170,6 +170,18 @@ def jplace_to_distance(file):
 
     return tree_obj, avg_matrix, total
 
+def assignments_to_distance(assignments, tree):
+    tree_labels = [n.label for n in tree.traverse_preorder() if not n.is_root()]
+    assignments = {i:assignments[i] for i in assignments if i in tree_labels}
+
+    total = sum([assignments[k] for k in assignments])
+    assignments = {k: assignments[k] / total for k in assignments}
+    tree_with_queries = place_queries(tree, assignments)
+
+    avg_matrix = compute_avg_distances(tree_with_queries, assignments)
+
+    return avg_matrix, total
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter)

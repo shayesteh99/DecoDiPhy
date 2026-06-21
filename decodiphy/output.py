@@ -22,7 +22,7 @@ def save_jplace(all_rounds, tree_obj, file):
         p = {}
         p['n'] = "q" + str(i + 1)
         index = label_dict[f['anchors'][i]]
-        p['p'] = [[index, f['p'][i], f['x'][i], f['y']]]
+        p['p'] = [[index, f['p'][i], f['x'][i], f['y'][i]]]
         placements.append(p)
 
     result['placements'] = placements

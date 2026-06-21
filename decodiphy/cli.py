@@ -19,13 +19,13 @@ from treeswift import read_tree_newick
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
 from .__init__ import __version__
-from .tree_utils import label_tree, preprocess_input, post_process_output, check_identifiability
+from .tree_utils import label_tree, preprocess_input, post_process_output, check_identifiability, compute_individual_ys
 from .matrix import get_input_matrices
 from .neighbors import get_neighbors, get_immediate_neighbors
 from .search import hill_climbing, exhaustive_search, k_closest_leaves, k_closest_leaves_iterative, reverse_hill_climbing_fixed_k
 from .output import save_jplace
 from .optimize import AnchorOSQP, AnchorCVXPY, solve_osqp_once
-from .read_jplace import jplace_to_distance
+from .read_jplace import jplace_to_distance, assignments_to_distance
 
 
 def main():
@@ -34,6 +34,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('-t', '--tree', required=False, help="Input tree")
     parser.add_argument('-d', '--distances', required=False, help="Distance file")
+    parser.add_argument('-a', '--assignments', required=False, help="A placement file with two columns: labels and counts")
     parser.add_argument('-j', '--jplace', required=False, help="jplace file")
     parser.add_argument('-s', '--seed', required=False, default=1142, help="Random Seed")
     parser.add_argument('-f', '--fix_k', required=False, default='0', help="Fix k")
@@ -66,13 +67,39 @@ def main():
 
     if args.jplace:
         tree_obj, distances, read_count = jplace_to_distance(args.jplace)
+        print("Total number of reads:", read_count)
 
         if not args.min_p:
             p_thresh = 1000 / read_count
 
-        print("Input tree was not labeled!")
+        print("Input tree was not labeled! The labeled tree is saved in ", os.path.join(args.outdir, "labeled_tree.trees"))
         with open(os.path.join(args.outdir, "labeled_tree.trees"), 'w') as f:
             f.write(tree_obj.newick())
+
+    elif args.assignments:
+        if not args.tree:
+            raise ValueError("You need to provide an input tree with your assignments.")
+
+        with open(args.tree, 'r') as f:
+            tree = f.read().strip().split("\n")[0]
+        tree_obj = read_tree_newick(tree)
+        if not label_tree(tree_obj):
+            print("Input tree was not labeled!")
+            with open(os.path.join(args.outdir, "labeled_tree.trees"), 'w') as f:
+                f.write(tree_obj.newick())
+
+        with open(args.assignments, 'r') as f:
+            lines = f.readlines()
+            lines = [l.split() for l in lines]
+            assignments = {l[0]: float(l[1]) for l in lines}
+
+        distances, read_count = assignments_to_distance(assignments, tree_obj)
+        print("Total number of reads:", read_count)
+
+        if not args.min_p and read_count >= 1000:
+            p_thresh = 1000 / read_count
+        else:
+            p_thresh = 0.01
 
     else:
         if not args.tree or not args.distances:
@@ -95,7 +122,7 @@ def main():
             p_thresh = 0.01
 
     pruned = preprocess_input(tree_obj, distances)
-    d, l, C, D, index_to_node, node_to_index, index_to_leaf = get_input_matrices(tree_obj, distances)
+    d, l, C, D, index_to_node, node_to_index, index_to_leaf, branch_lengths, terminal_lengths = get_input_matrices(tree_obj, distances)
     D_T = D.T
     C_T = C.T
     l_T = l.reshape(-1)
@@ -124,7 +151,7 @@ def main():
 
     all_rounds = []
 
-    print("created matrices")
+    print("Input matrices created!")
 
     if args.fix_k == '1':
         if not args.k:
@@ -191,8 +218,8 @@ def main():
             raise ValueError("k too small!")
 
         for i in range(start_k, end_k):
-            print("+" * 200)
-            print(i)
+            print("=" * 200)
+            print("k = ", i)
 
             if opt_anchors is None:
                 opt_anchors = np.random.choice([i for i in range(len(index_to_node))], i, replace=False)
@@ -203,15 +230,22 @@ def main():
             solver = SolverClass(d, l_T, C_T, D_T, opt_anchors)
 
             opt_anchors, opt_obj, opt_p, opt_x, opt_y, round_info = hill_climbing(
-                d, l_T, C_T, D_T, index_to_node, i, all_rounds, solver,
+                d, l_T, C_T, D_T, index_to_node, i, solver,
                 anchors=opt_anchors, quick=args.quick, neighbors=node_neighbors,
             )
-            print("opt_x: ", opt_x)
-            print("opt_p: ", opt_p)
-            print("opt_y: ", opt_y)
+
+            opt_y = compute_individual_ys([index_to_node[i] for i in opt_anchors], opt_x, opt_y, terminal_lengths, branch_lengths)
+            round_info['y'] = list(opt_y)
+
+            all_rounds.append(round_info)
+            print("Optimal Placements: ", *[index_to_node[i] for i in opt_anchors], sep = " ")
+            print("Loss: ", opt_obj)
+            # print("opt_x: ", opt_x)
+            # print("opt_p: ", opt_p)
+            # print("opt_y: ", opt_y)
 
             if min(opt_p) < p_thresh and args.fix_k == '0':
-                print("stopped by p0")
+                print("Stopped by low abundance!")
                 break
 
             with open(os.path.join(args.outdir, "all_rounds_" + str(i) + ".json"), 'w') as f:
@@ -225,7 +259,7 @@ def main():
             all_y.append(opt_y)
             all_anchors.append(opt_anchors)
             if opt_obj < 1e-10 and args.fix_k == '0':
-                print("stopped by obj0")
+                print("Stopped by near-zero residue!")
                 break
 
             prev_obj = opt_obj
@@ -244,7 +278,7 @@ def main():
             }
             all_rounds.append(round_info)
             with open(os.path.join(args.outdir, "all_rounds.json"), 'w') as f:
-                json.dump(all_rounds, f)
+                json.dump(all_rounds, f, indent=4)
             return
 
         opt_anchors = all_anchors[-1]
@@ -271,6 +305,7 @@ def main():
                     new_anchors = np.array(opt_anchors)
                     new_anchors[i] = s
                     new_obj, new_p, new_x, new_y, _ = solve_osqp_once(d, l_T, C_T, D_T, new_anchors, index_to_node, len(new_anchors))
+                    new_y = compute_individual_ys(new_anchors, new_x, new_y, terminal_lengths, branch_lengths)
                     if new_x[i] < 1 - 1e-3:
                         opt_anchors = new_anchors
                         opt_x = new_x
@@ -290,6 +325,7 @@ def main():
                 new_anchors = np.array(opt_anchors)
                 new_anchors[i] = s
                 new_obj, new_p, new_x, new_y, _ = solve_osqp_once(d, l_T, C_T, D_T, new_anchors, index_to_node, len(new_anchors))
+                new_y = compute_individual_ys(new_anchors, new_x, new_y, terminal_lengths, branch_lengths)
                 if new_x[i] > 1e-4 and np.fabs(new_x[i] - 1) > 1e-3:
                     opt_anchors = new_anchors
                     opt_x = new_x
@@ -303,10 +339,11 @@ def main():
             list(opt_anchors).remove(root_edges[1])
             opt_anchors = np.array(opt_anchors)
             opt_obj, opt_p, opt_x, opt_y, _ = solve_osqp_once(d, l_T, C_T, D_T, opt_anchors, index_to_node, len(new_anchors))
+            opt_y = compute_individual_ys(opt_anchors, opt_x, opt_y, terminal_lengths, branch_lengths)
 
     end = time.time()
 
-    sorted_indices = np.argsort(opt_anchors)
+    sorted_indices = np.argsort(opt_p)[::-1]
     opt_anchors = opt_anchors[sorted_indices]
     opt_anchors = [index_to_node[i] for i in opt_anchors]
     opt_p = opt_p[sorted_indices]
@@ -315,6 +352,8 @@ def main():
     if pruned:
         opt_anchors, opt_x = post_process_output(tree_obj, read_tree_newick(tree), opt_anchors, opt_x)
 
+    # opt_y = compute_individual_ys(opt_anchors, opt_x, opt_y, terminal_lengths, branch_lengths)
+    # print(opt_y)
     round_info = {
         "k": len(opt_anchors),
         "rounds": "final",
@@ -322,19 +361,23 @@ def main():
         "anchors": list(opt_anchors),
         "p": list(opt_p),
         "x": list(opt_x),
-        "y": float(opt_y),
+        "y": list(opt_y),
         "runtime": end - start,
     }
     all_rounds.append(round_info)
 
-    print("optimal anchors: ", opt_anchors)
-    print("optimal p: ", opt_p)
-    print("optimal x: ", opt_x)
-    print("optimal y: ", opt_y)
+    print("=" * 200)
+    print("Optimal Placments: ")
+    for i in range(len(opt_anchors)):
+        print("Edge: ", opt_anchors[i], ", abundance: ", opt_p[i], ", distal length: ", opt_x[i], ", terminal length: ", opt_y[i])
+    # print("Optimal Placments: ", opt_anchors)
+    # print("optimal p: ", opt_p)
+    # print("optimal x: ", opt_x)
+    # print("optimal y: ", opt_y)
     print("Optimization Runtime: ", end - start)
 
     with open(os.path.join(args.outdir, "all_rounds.json"), 'w') as f:
-        json.dump(all_rounds, f)
+        json.dump(all_rounds, f, indent=4)
     if os.path.exists(os.path.join(args.outdir, "all_rounds_" + str(len(opt_anchors)) + ".json")):
         os.remove(os.path.join(args.outdir, "all_rounds_" + str(len(opt_anchors)) + ".json"))
 
