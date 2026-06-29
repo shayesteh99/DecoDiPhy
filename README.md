@@ -2,7 +2,7 @@
 DecoDiPhy is a tool for consolidating noisy and erroneous sequence read information into accurate phylogenetic placements. All you need to run DecoDiPhy is a distance vector of your sample to each of your reference taxa, and a phylogeny on the same reference taxa. DecoDiPhy will find a multi-placement on this phylogeny that explains your sample.
 
 ## Installation 
-DecoDiPhy is available on `bioconda`. You can install using the following commands:
+DecoDiPhy is available on `bioconda`. You can install the latest version using the following commands:
 ```
 conda create -n decodiphy python=3.11 decodiphy
 conda activate decodiphy
