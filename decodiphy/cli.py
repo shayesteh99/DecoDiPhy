@@ -305,7 +305,7 @@ def main():
                     new_anchors = np.array(opt_anchors)
                     new_anchors[i] = s
                     new_obj, new_p, new_x, new_y, _ = solve_osqp_once(d, l_T, C_T, D_T, new_anchors, index_to_node, len(new_anchors))
-                    new_y = compute_individual_ys(new_anchors, new_x, new_y, terminal_lengths, branch_lengths)
+                    new_y = compute_individual_ys([index_to_node[i] for i in new_anchors], new_x, new_y, terminal_lengths, branch_lengths)
                     if new_x[i] < 1 - 1e-3:
                         opt_anchors = new_anchors
                         opt_x = new_x
@@ -325,7 +325,7 @@ def main():
                 new_anchors = np.array(opt_anchors)
                 new_anchors[i] = s
                 new_obj, new_p, new_x, new_y, _ = solve_osqp_once(d, l_T, C_T, D_T, new_anchors, index_to_node, len(new_anchors))
-                new_y = compute_individual_ys(new_anchors, new_x, new_y, terminal_lengths, branch_lengths)
+                new_y = compute_individual_ys([index_to_node[i] for i in new_anchors], new_x, new_y, terminal_lengths, branch_lengths)
                 if new_x[i] > 1e-4 and np.fabs(new_x[i] - 1) > 1e-3:
                     opt_anchors = new_anchors
                     opt_x = new_x
@@ -339,7 +339,7 @@ def main():
             list(opt_anchors).remove(root_edges[1])
             opt_anchors = np.array(opt_anchors)
             opt_obj, opt_p, opt_x, opt_y, _ = solve_osqp_once(d, l_T, C_T, D_T, opt_anchors, index_to_node, len(new_anchors))
-            opt_y = compute_individual_ys(opt_anchors, opt_x, opt_y, terminal_lengths, branch_lengths)
+            opt_y = compute_individual_ys([index_to_node[i] for i in opt_anchors], opt_x, opt_y, terminal_lengths, branch_lengths)
 
     end = time.time()
 
