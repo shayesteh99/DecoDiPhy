@@ -1,5 +1,6 @@
 library(jsonlite)
 library(ggtree)
+library(ggplot2)
 library(stringr)
 library(dplyr)
 library(treeio)
