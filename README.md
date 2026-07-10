@@ -19,6 +19,13 @@ pip install .
 
 If the build is successful, running `decodiphy --help` will show you all the parameters and their use for decodiphy.
 
+## Interactive Tutorial
+
+If you're new to DecoDiPhy, we recommend starting with our interactive Google Colab tutorial. The tutorial walks through the complete workflow, including installation, preparing input files, running DecoDiPhy on a real metagenomic sample, interpreting the output files, visualizing the results, and controlling the number of placements.
+
+**Launch the tutorial here:** **[DecoDiPhy Tutorial](https://github.com/shayesteh99/DecoDiPhy/blob/main/DecoDiPhy_tutorial.ipynb)**
+
+The notebook is fully self-contained and can be run directly in your browser without installing DecoDiPhy locally.
 
 ## Execution
 DecoDiPhy accepts multiple input formats. The easiest way to run it is to use the jplace output from krepp. krepp is a recent tool developed by Ali Osman Berk Şapci and Siavash Mirarab (See [preprint](https://www.biorxiv.org/content/10.1101/2025.01.20.633730v1)). You can visit [here](https://github.com/bo1929/krepp/tree/master) to check it out and learn how to use it. krepp will output distances to each reference taxa and placements of individual reads on the backbone tree, and that's why it pairs very well with DecoDiPhy. In our experience, individual krepp placements are more accurate for consolidation with DecoDiPhy. If you have the krepp output in jplace format like `Example/krepp_multiplacement.jplace`, you can simply run:
@@ -78,14 +85,3 @@ where `edge_num` is the label of the placement edge in the backbone tree (the ba
 ```
 where `k` is the number of placements, `rounds` is the number of optimization rounds for that `k`, `loss` is the final loss value for the opimization function, `anchors` is the list of size `k` of placement edges labelled by initial labels of the backbone tree (if the internal nodes in the input tree are not labeled, DecoDiPhy will label them and save the labeled tree in `[OUTPUT DIR]/labeled_tree.trees`), `p` and `x` are lists of size `k` denoting the abundances and the relative placement positions, `y` is the average terminal length, and `runtime` and `opttime` are the running time of the total optimization and the small-prolem, respectively. The last JSON object in this list is labeled with `rounds="final"` and corresponds to the set of placements in the jplace file.
 
-## Using krepp output as input to DecoDiPhy:
-
-
-```
-python decodiphy/compute_distances.py -i Example/krepp_multiplacements.jplace -t Example/pruned_tree.trees -o Example/krepp_distances.txt
-```
-
-And now you can run DecoDiPhy on top of krepp distances:
-```
-decodiphy -t Example/pruned_tree.trees -d Example/krepp_distances.txt -o ./Example
-```
