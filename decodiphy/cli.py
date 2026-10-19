@@ -121,7 +121,7 @@ def main():
         if not args.min_p:
             p_thresh = 0.01
 
-    pruned = preprocess_input(tree_obj, distances)
+    tree_obj, pruned = preprocess_input(tree_obj, distances)
     d, l, C, D, index_to_node, node_to_index, index_to_leaf, branch_lengths, terminal_lengths = get_input_matrices(tree_obj, distances)
     D_T = D.T
     C_T = C.T

@@ -1,3 +1,6 @@
+import warnings
+
+
 def is_number(x):
     try:
         float(x)
@@ -21,25 +24,13 @@ def label_tree(tree_obj, index=0):
 
 
 def preprocess_input(tree_obj, distances):
-    total = len([l for l in tree_obj.traverse_leaves()])
-    leaves = [l.label for l in tree_obj.traverse_leaves() if l.label in distances]
-    for l in tree_obj.traverse_leaves():
-        if l.label not in leaves:
-            parent = l.parent
-            parent.remove_child(l)
-            if parent.is_root():
-                child = parent.child_nodes()[0]
-                parent.remove_child(child)
-                child.edge_length = 0
-                tree_obj.root = child
-            else:
-                parent.contract()
-
-    distances = {d: distances[d] for d in distances if d in leaves}
-
-    if len(leaves) < total:
-        return True
-    return False
+    all_leaves = {l.label for l in tree_obj.traverse_leaves()}
+    keep = {d for d in distances if d in all_leaves}
+    # treeswift warns for every labeled unifurcation it suppresses
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        pruned_tree = tree_obj.extract_tree_with(keep)
+    return pruned_tree, len(keep) < len(all_leaves)
 
 
 def post_process_output(tree_obj, og_tree, opt_anchors, opt_x):

@@ -20,6 +20,7 @@ def hill_climbing(d, l_T, C_T, D_T, index_to_node, k, solver, anchors=None, quic
         # print("=" * 200)
         # print(rounds)
         min_obj = original
+        min_p, min_x, min_y = p, x, y
         og_anchors = np.array(anchors)
 
         for ind in range(k):
@@ -64,6 +65,7 @@ def hill_climbing(d, l_T, C_T, D_T, index_to_node, k, solver, anchors=None, quic
             # all_rounds.append(round_info)
             return anchors, min_obj, min_p, min_x, min_y, round_info
         original = min_obj
+        p,x,y = min_p, min_x, min_y
         og_anchors = anchors
 
     return anchors, min_obj, min_p, min_x, min_y, round_info

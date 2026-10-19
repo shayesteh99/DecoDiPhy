@@ -31,7 +31,7 @@ Example:
 decodiphy -j Example/krepp_multiplacement.jplace -o ./Example
 ```
 
-Alternatively, DecoDiPhy version 1.5.0 also supports genome assignments. You can use a simple assignment file with two columns: genome/node label and read count/abundance, and a backbone tree with the same labels. See `Example/krepp_assignments.txt` for how to prepare this file. Then, you can run:
+Alternatively, DecoDiPhy version 1.5.0 and later also supports genome assignments. You can use a simple assignment file with two columns: genome/node label and read count/abundance, and a backbone tree with the same labels. See `Example/krepp_assignments.txt` for how to prepare this file. Then, you can run:
 
 ```
 decodiphy -a [INPUT ASSIGNMENT FILE] -t [REFERENCE TREE] -o [OUTPUT DIR] > [LOG FILE]
