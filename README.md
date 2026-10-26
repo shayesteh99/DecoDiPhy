@@ -85,3 +85,6 @@ where `edge_num` is the label of the placement edge in the backbone tree (the ba
 ```
 where `k` is the number of placements, `rounds` is the number of optimization rounds for that `k`, `loss` is the final loss value for the opimization function, `anchors` is the list of size `k` of placement edges labelled by initial labels of the backbone tree (if the internal nodes in the input tree are not labeled, DecoDiPhy will label them and save the labeled tree in `[OUTPUT DIR]/labeled_tree.trees`), `p` and `x` are lists of size `k` denoting the abundances and the relative placement positions, `y` is the average terminal length, and `runtime` and `opttime` are the running time of the total optimization and the small-prolem, respectively. The last JSON object in this list is labeled with `rounds="final"` and corresponds to the set of placements in the jplace file.
 
+
+## License
+DecoDiPhy is released under the MIT License. See [LICENSE](LICENSE) for details.
